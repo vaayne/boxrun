@@ -3,7 +3,7 @@ set -e
 
 # BoxRun installer — downloads the latest release binary for your platform.
 
-REPO="aspect-build/boxrun"
+REPO="boxlite-ai/boxrun"
 INSTALL_DIR="${BOXRUN_INSTALL_DIR:-/usr/local/bin}"
 
 detect_os() {

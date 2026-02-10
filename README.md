@@ -1,77 +1,73 @@
-# BoxRun (Rust)
+# BoxRun [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/bCmaK4Ce)
 
-A local VM execution platform built on BoxLite. Single binary for server + CLI, with a Rust SDK crate.
+Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds — no Docker, no Vagrant, no heavyweight hypervisor.
 
-## Install
+## Why BoxRun?
 
-### From GitHub Releases
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/aspect-build/boxrun/main/boxrun-rs/install.sh | sh
-```
-
-### From source
-
-```sh
-cargo install --path crates/boxrun-server
-```
+- **Millisecond boot times** — VMs start in <500ms, not minutes
+- **Real Linux VMs** — full kernel isolation via microVM technology, not containers
+- **Volume mounts** — share host directories with Docker-style `-v /host:/guest[:ro]`
+- **Web dashboard** — real-time browser UI at `http://localhost:9090/ui`
+- **Dead simple** — one binary, one socket, one SQLite file
 
 ## Quick Start
 
-```sh
+```bash
+# Install (auto-detects platform, downloads single binary)
+curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+
 # Start the server
-boxrun serve
+boxrun serve &
 
-# Create a box
-boxrun create ubuntu --name mybox
+# Create a VM and drop into it
+boxrun create ubuntu:24.04 --name dev
+boxrun attach dev
 
-# Execute a command
-boxrun exec mybox -- echo "Hello from BoxRun"
+# Run commands non-interactively
+boxrun exec dev -- uname -a
 
-# List boxes
-boxrun ls
+# Mount a host directory into the VM
+boxrun create ubuntu:24.04 --name work -v /path/to/project:/root/project
 
-# Stop and remove
-boxrun stop mybox
-boxrun rm mybox
+# Copy files in and out
+boxrun cp ./data.csv dev:/root/data.csv
+boxrun cp dev:/root/results.csv ./results.csv
+
+# Lifecycle: stop (preserves disk), restart, destroy
+boxrun stop dev
+boxrun start dev
+boxrun rm dev --force
 ```
 
-## CLI Commands
+## Python SDK
 
-| Command | Description |
-|---------|-------------|
-| `boxrun serve` | Start the API server |
-| `boxrun create <image>` | Create and start a box |
-| `boxrun ls` | List boxes |
-| `boxrun stop <box>` | Stop a running box |
-| `boxrun start <box>` | Start a stopped box |
-| `boxrun rm <box>` | Remove a box |
-| `boxrun exec <box> -- <cmd>` | Execute a command |
-| `boxrun attach <box>` | Attach to a box (TTY) |
-| `boxrun cp <src> <dst>` | Copy files (box:path or local) |
-| `boxrun run <image> -- <cmd>` | Run command in ephemeral box |
-| `boxrun gc` | Garbage collect stopped boxes |
-| `boxrun images` | List available images |
+Install the Python SDK separately:
 
-## API
+```bash
+pip install boxrun
+```
 
-The server exposes a REST API at `http://127.0.0.1:9090` (or Unix socket `~/.boxrun/boxrun.sock`):
+```python
+import asyncio
+from boxrun import BoxRunClient
 
-- `GET /v1/info` — Server info
-- `POST /v1/boxes` — Create a box
-- `GET /v1/boxes` — List boxes
-- `GET /v1/boxes/{id}` — Get box details
-- `POST /v1/boxes/{id}:stop` — Stop a box
-- `POST /v1/boxes/{id}:start` — Start a box
-- `DELETE /v1/boxes/{id}` — Remove a box
-- `POST /v1/boxes/{id}/exec` — Start an execution
-- `GET /v1/boxes/{id}/exec/{eid}/events` — SSE event stream
-- `POST /v1/boxes/{id}/files/upload` — Upload file (multipart)
-- `POST /v1/boxes/{id}/files/download` — Download file
-- `GET /v1/boxes/{id}/attach` — WebSocket TTY attach
-- `POST /v1/run` — Run command in ephemeral box
-- `POST /v1/gc` — Garbage collect
-- `GET /ui` — Web dashboard
+async def main():
+    async with BoxRunClient() as client:
+        box = await client.create("ubuntu:24.04", name="dev")
+
+        result = await box.exec(["echo", "hello"])
+        print(f"Exit code: {result.exit_code}")
+
+        async for event in box.exec_stream(["apt-get", "update"]):
+            if event.type == "log":
+                print(event.data, end="")
+
+        await box.remove()
+
+asyncio.run(main())
+```
+
+See [docs/sdk.md](docs/sdk.md) for the full API reference and [examples/](examples/) for runnable scripts.
 
 ## Rust SDK
 
@@ -79,7 +75,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-boxrun-sdk = { path = "crates/boxrun-sdk" }
+boxrun-sdk = { git = "https://github.com/boxlite-ai/boxrun" }
 ```
 
 ```rust
@@ -101,14 +97,15 @@ async fn main() {
 }
 ```
 
-## Project Structure
+## Documentation
 
-```
-crates/
-├── boxrun-types/     # Shared types (errors, models, config)
-├── boxrun-server/    # Server + CLI binary
-└── boxrun-sdk/       # Rust SDK crate
-```
+| Document | Description |
+|----------|-------------|
+| [CLI Reference](docs/cli.md) | All commands, flags, interactive terminal, volume mounts, web dashboard |
+| [Python SDK](docs/sdk.md) | Full SDK API, data types, error handling, AI agent patterns |
+| [REST API](docs/api.md) | HTTP endpoints, WebSocket attach, SSE streaming |
+| [Architecture](docs/architecture.md) | System overview, component descriptions, box lifecycle |
+| [Configuration](docs/configuration.md) | Environment variables, resource limits, per-box defaults |
 
 ## Development
 
@@ -120,6 +117,15 @@ cargo fmt --all          # Format
 cargo run -- serve       # Run server
 ```
 
+## Project Structure
+
+```
+crates/
+├── boxrun-types/     # Shared types (errors, models, config)
+├── boxrun-server/    # Server + CLI binary
+└── boxrun-sdk/       # Rust SDK crate
+```
+
 ## License
 
-MIT
+Apache-2.0

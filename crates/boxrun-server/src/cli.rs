@@ -479,13 +479,165 @@ async fn stream_exec_events(box_id: &str, exec_id: &str) {
 
 // ── attach ───────────────────────────────────────────────────────────────
 
-pub async fn attach(_box_id: &str, _shell: &str) {
-    // WebSocket attach requires platform-specific TTY handling
-    // For now, print a message indicating this feature requires
-    // additional platform support
-    eprintln!("Interactive attach is not yet implemented in the Rust binary.");
-    eprintln!("Use the Python CLI for now: boxrun attach {_box_id}");
-    process::exit(1);
+pub async fn attach(box_id: &str, shell: &str) {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite;
+
+    // Get terminal size
+    let (cols, rows) = terminal_size();
+    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into());
+
+    // Build WebSocket URL
+    let host = std::env::var("BOXRUN_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let port = std::env::var("BOXRUN_PORT").unwrap_or_else(|_| "9090".into());
+    let url = format!(
+        "ws://{host}:{port}/v1/boxes/{box_id}/attach?shell={shell}&cols={cols}&rows={rows}&term={term}"
+    );
+
+    // Connect WebSocket BEFORE entering raw mode
+    let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("Error: Cannot connect to BoxRun server: {e}");
+            eprintln!("Is the server running? Start with: boxrun serve");
+            process::exit(1);
+        }
+    };
+
+    let (mut ws_sink, mut ws_stream) = ws_stream.split();
+
+    // Save terminal state and enter raw mode
+    let stdin_fd = 0; // STDIN_FILENO
+    let old_termios = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(stdin_fd, &mut t) != 0 {
+            eprintln!("Error: Failed to get terminal attributes");
+            process::exit(1);
+        }
+        t
+    };
+
+    // Set raw mode
+    unsafe {
+        let mut raw = old_termios;
+        libc::cfmakeraw(&mut raw);
+        libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &raw);
+    }
+
+    // Channel for stdin data (read in a blocking thread)
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+
+    // Spawn blocking stdin reader
+    let stdin_task = tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            let n =
+                unsafe { libc::read(stdin_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            let data = buf[..n as usize].to_vec();
+            if stdin_tx.blocking_send(data).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Handle SIGWINCH (terminal resize)
+    let mut sigwinch =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+            .expect("Failed to register SIGWINCH handler");
+
+    // Main event loop
+    let mut exit_code: i32 = 0;
+    loop {
+        tokio::select! {
+            // stdin → WebSocket
+            Some(data) = stdin_rx.recv() => {
+                let msg = tungstenite::Message::Binary(data.into());
+                if ws_sink.send(msg).await.is_err() {
+                    exit_code = 1;
+                    break;
+                }
+            }
+            // WebSocket → stdout
+            msg = ws_stream.next() => {
+                match msg {
+                    Some(Ok(tungstenite::Message::Binary(data))) => {
+                        let stdout_fd = 1; // STDOUT_FILENO
+                        unsafe {
+                            libc::write(stdout_fd, data.as_ptr() as *const libc::c_void, data.len());
+                        }
+                    }
+                    Some(Ok(tungstenite::Message::Text(text))) => {
+                        // Control messages from server
+                        if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(&text) {
+                            match ctrl.get("type").and_then(|v| v.as_str()) {
+                                Some("exit") => {
+                                    exit_code = ctrl.get("code")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0) as i32;
+                                    break;
+                                }
+                                Some("error") => {
+                                    // Restore terminal before printing error
+                                    unsafe {
+                                        libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &old_termios);
+                                    }
+                                    let msg = ctrl.get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Unknown error");
+                                    eprintln!("\r\nError: {msg}");
+                                    process::exit(1);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Ok(tungstenite::Message::Close(_))) | None => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            // Terminal resize
+            _ = sigwinch.recv() => {
+                let (new_cols, new_rows) = terminal_size();
+                let resize_msg = serde_json::json!({
+                    "type": "resize",
+                    "cols": new_cols,
+                    "rows": new_rows,
+                });
+                let msg = tungstenite::Message::Text(resize_msg.to_string().into());
+                let _ = ws_sink.send(msg).await;
+            }
+        }
+    }
+
+    // Restore terminal
+    unsafe {
+        libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &old_termios);
+    }
+
+    // Clean up
+    stdin_task.abort();
+    let _ = ws_sink.close().await;
+
+    if exit_code != 0 {
+        process::exit(exit_code);
+    }
+}
+
+/// Get the current terminal size (cols, rows).
+fn terminal_size() -> (u16, u16) {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+            (ws.ws_col, ws.ws_row)
+        } else {
+            (80, 24)
+        }
+    }
 }
 
 // ── cp ───────────────────────────────────────────────────────────────────

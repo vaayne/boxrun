@@ -605,19 +605,22 @@ async fn attach_box_ws(
 async fn handle_attach(
     state: Arc<AppState>,
     box_id: String,
-    _params: AttachParams,
+    params: AttachParams,
     mut socket: WebSocket,
 ) {
+    use futures::StreamExt;
+
     // Verify box exists and is running
-    match state.manager.get_box(&box_id).await {
-        Ok(box_data) => {
-            if box_data.status != "running" {
+    let box_data = match state.manager.get_box(&box_id).await {
+        Ok(bd) => {
+            if bd.status != "running" {
                 let _ = socket
                     .send(Message::Text(json!({"type": "error", "code": "BOX_NOT_RUNNING", "message": "Box is not running"}).to_string().into()))
                     .await;
                 let _ = socket.close().await;
                 return;
             }
+            bd
         }
         Err(e) => {
             let _ = socket
@@ -630,28 +633,119 @@ async fn handle_attach(
             let _ = socket.close().await;
             return;
         }
-    }
+    };
 
-    // In real implementation: start TTY exec, forward stdin/stdout/stderr
-    // For now, echo back input and send exit after disconnect
-    while let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            Message::Binary(data) => {
-                let _ = socket.send(Message::Binary(data)).await;
-            }
-            Message::Text(text) => {
-                // Control messages
-                if let Ok(ctrl) = serde_json::from_str::<Value>(&text) {
-                    if ctrl.get("type").and_then(|v| v.as_str()) == Some("resize") {
-                        continue;
-                    }
+    // Get BoxLite handle
+    let boxlite_id = match box_data.boxlite_id.as_ref() {
+        Some(id) => id,
+        None => {
+            let _ = socket
+                .send(Message::Text(
+                    json!({"type": "error", "code": "RUNTIME_ERROR", "message": "Box has no BoxLite ID"})
+                        .to_string()
+                        .into(),
+                ))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    let litebox = match state.manager.runtime().get(boxlite_id).await {
+        Ok(Some(lb)) => lb,
+        _ => {
+            let _ = socket
+                .send(Message::Text(
+                    json!({"type": "error", "code": "RUNTIME_ERROR", "message": "BoxLite VM not found"})
+                        .to_string()
+                        .into(),
+                ))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    // Start TTY exec
+    let cmd = boxlite::BoxCommand::new(&params.shell)
+        .tty(true)
+        .env("TERM", &params.term)
+        .working_dir(&box_data.workdir);
+
+    let mut execution = match litebox.exec(cmd).await {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = socket
+                .send(Message::Text(
+                    json!({"type": "error", "code": "RUNTIME_ERROR", "message": format!("Failed to start exec: {e}")})
+                        .to_string()
+                        .into(),
+                ))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    // Set initial terminal size
+    let _ = execution
+        .resize_tty(params.rows as u32, params.cols as u32)
+        .await;
+
+    // Take stdin and stdout (take-once)
+    let mut exec_stdin = execution.stdin();
+    let exec_stdout = execution.stdout();
+
+    // Channel for forwarding exec stdout to the main loop
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+    // Spawn stdout reader: exec → channel
+    let stdout_task = tokio::spawn(async move {
+        if let Some(mut stdout) = exec_stdout {
+            while let Some(chunk) = stdout.next().await {
+                if out_tx.send(chunk.into_bytes()).await.is_err() {
+                    break;
                 }
             }
-            Message::Close(_) => break,
-            _ => {}
+        }
+    });
+
+    // Main event loop: bridge channel ↔ websocket
+    loop {
+        tokio::select! {
+            // exec stdout → websocket
+            Some(data) = out_rx.recv() => {
+                if socket.send(Message::Binary(data.into())).await.is_err() {
+                    break;
+                }
+            }
+            // websocket → exec stdin (+ control messages)
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        if let Some(ref mut stdin) = exec_stdin {
+                            let _ = stdin.write(&data).await;
+                        }
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(ctrl) = serde_json::from_str::<Value>(&text) {
+                            if ctrl.get("type").and_then(|v| v.as_str()) == Some("resize") {
+                                let cols = ctrl.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
+                                let rows = ctrl.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+                                let _ = execution.resize_tty(rows, cols).await;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
         }
     }
 
+    // Clean up: kill execution, close socket
+    let _ = execution.kill().await;
+    stdout_task.abort();
     let _ = socket
         .send(Message::Text(
             json!({"type": "exit", "code": 0}).to_string().into(),

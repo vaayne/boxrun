@@ -5,8 +5,8 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
-repository = "https://github.com/aspect-build/boxrun"
+license = "Apache-2.0"
+repository = "https://github.com/boxlite-ai/boxrun"
 
 [workspace.dependencies]
 # Web framework
@@ -32,7 +32,11 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
 
 # BoxLite
-boxlite = "0.4"
+boxlite = { path = "../boxlite/boxlite" }
+
+# WebSocket client (for CLI attach)
+tokio-tungstenite = "0.26"
+libc = "0.2"
 
 # Utilities
 nanoid = "0.4"

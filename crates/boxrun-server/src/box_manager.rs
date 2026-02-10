@@ -1,9 +1,15 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashMap;
+use futures::StreamExt;
 use tokio::sync::Mutex;
+
+use boxlite::runtime::options::{BoxOptions as BlBoxOptions, NetworkSpec, RootfsSpec, VolumeSpec};
+use boxlite::{BoxCommand, BoxliteRuntime, CopyOptions};
 
 use boxrun_types::config::{MAX_TOTAL_CPU, MAX_TOTAL_MEMORY_MB};
 use boxrun_types::error::{BoxRunError, ErrorCode};
@@ -28,28 +34,26 @@ pub struct ResourceUsage {
 }
 
 /// Core business logic for managing boxes and executions.
-/// Note: BoxLite integration is stubbed out — the real implementation would
-/// call boxlite::Boxlite::default() etc. For now, the manager handles all
-/// state management, resource tracking, and event streaming logic.
+/// Integrates with BoxLite runtime for VM lifecycle and command execution.
 pub struct BoxManager {
     store: Store,
     event_bus: EventBus,
     resources: Arc<Mutex<ResourceUsage>>,
-    // exec_id -> JoinHandle for streaming tasks
     exec_tasks: DashMap<String, tokio::task::JoinHandle<()>>,
-    // box_id -> true (tracks which boxes we "own" a handle for)
-    box_handles: DashMap<String, bool>,
+    runtime: BoxliteRuntime,
 }
 
 impl BoxManager {
-    pub fn new(store: Store, event_bus: EventBus) -> Self {
-        Self {
+    pub fn new(store: Store, event_bus: EventBus) -> Result<Self, String> {
+        let runtime = BoxliteRuntime::with_defaults()
+            .map_err(|e| format!("Failed to initialize BoxLite runtime: {e}"))?;
+        Ok(Self {
             store,
             event_bus,
             resources: Arc::new(Mutex::new(ResourceUsage::default())),
             exec_tasks: DashMap::new(),
-            box_handles: DashMap::new(),
-        }
+            runtime,
+        })
     }
 
     pub fn store(&self) -> &Store {
@@ -60,20 +64,46 @@ impl BoxManager {
         &self.event_bus
     }
 
+    #[allow(dead_code)]
+    pub fn runtime(&self) -> &BoxliteRuntime {
+        &self.runtime
+    }
+
     /// Initialize the manager: recover running boxes from DB.
     pub async fn init(&self) -> Result<(), String> {
         let boxes = self.store.list_boxes(None).await?;
         let mut res = self.resources.lock().await;
         for box_data in boxes {
-            if matches!(box_data.status.as_str(), "running" | "creating")
-                && box_data.boxlite_id.is_some()
-            {
-                // In real implementation: try to get BoxLite handle
-                // For now, mark as running and track resources
-                self.box_handles.insert(box_data.id.clone(), true);
-                res.total_cpu += box_data.cpu;
-                res.total_memory_mb += box_data.memory_mb;
-                res.box_count += 1;
+            if let Some(boxlite_id) = box_data.boxlite_id.as_ref() {
+                if !matches!(box_data.status.as_str(), "running" | "creating") {
+                    continue;
+                }
+                match self.runtime.get(boxlite_id).await {
+                    Ok(Some(_)) => {
+                        // Box still exists in BoxLite, track resources
+                        res.total_cpu += box_data.cpu;
+                        res.total_memory_mb += box_data.memory_mb;
+                        res.box_count += 1;
+                    }
+                    _ => {
+                        // Box no longer exists in BoxLite, mark as stopped
+                        tracing::warn!(
+                            "Box {} (boxlite_id={}) not found in BoxLite, marking as stopped",
+                            box_data.id,
+                            boxlite_id
+                        );
+                        let _ = self
+                            .store
+                            .update_box(
+                                &box_data.id,
+                                &[
+                                    ("status", BoxValue::Text("stopped".into())),
+                                    ("stopped_at", BoxValue::Text(now_iso())),
+                                ],
+                            )
+                            .await;
+                    }
+                }
             }
         }
         Ok(())
@@ -85,6 +115,24 @@ impl BoxManager {
             entry.value().abort();
         }
         self.exec_tasks.clear();
+    }
+
+    /// Get a BoxLite handle for a box, looking up by boxlite_id.
+    async fn get_litebox(&self, box_data: &BoxRow) -> Result<boxlite::LiteBox, BoxRunError> {
+        let boxlite_id = box_data
+            .boxlite_id
+            .as_ref()
+            .ok_or_else(|| BoxRunError::new(ErrorCode::RuntimeError, "Box has no BoxLite ID"))?;
+        self.runtime
+            .get(boxlite_id)
+            .await
+            .map_err(|e| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to get BoxLite handle: {e}"),
+                )
+            })?
+            .ok_or_else(|| BoxRunError::new(ErrorCode::RuntimeError, "BoxLite VM not found"))
     }
 
     // ── Box lifecycle ────────────────────────────────────────────────────
@@ -148,7 +196,7 @@ impl BoxManager {
 
         let box_id = gen_id("box");
 
-        // Record in DB
+        // Record in DB with "creating" status
         let _box_data = self
             .store
             .create_box(
@@ -172,9 +220,77 @@ impl BoxManager {
                 }
             })?;
 
-        // In real implementation: create BoxLite VM, start it
-        // For now, simulate successful creation
-        self.box_handles.insert(box_id.clone(), true);
+        // Build BoxLite options
+        let bl_env: Vec<(String, String)> = env
+            .as_ref()
+            .map(|e| e.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
+        let bl_volumes: Vec<VolumeSpec> = volumes
+            .as_ref()
+            .map(|vols| {
+                vols.iter()
+                    .filter_map(|v| {
+                        let host_path = v.get("host_path")?.as_str()?.to_string();
+                        let guest_path = v.get("guest_path")?.as_str()?.to_string();
+                        let read_only = v
+                            .get("read_only")
+                            .and_then(|r| r.as_bool())
+                            .unwrap_or(false);
+                        Some(VolumeSpec {
+                            host_path,
+                            guest_path,
+                            read_only,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let bl_options = BlBoxOptions {
+            cpus: Some(cpu as u8),
+            memory_mib: Some(memory_mb as u32),
+            disk_size_gb: if disk_size_gb > 0 {
+                Some(disk_size_gb as u64)
+            } else {
+                None
+            },
+            working_dir: Some(workdir.to_string()),
+            env: bl_env,
+            rootfs: RootfsSpec::Image(image.to_string()),
+            volumes: bl_volumes,
+            network: if network {
+                NetworkSpec::default()
+            } else {
+                NetworkSpec::Isolated
+            },
+            auto_remove: false, // Persistent boxes
+            detach: true,       // Persist after parent exit
+            ..Default::default()
+        };
+
+        // Create and start the BoxLite VM
+        let litebox = self
+            .runtime
+            .create(bl_options, Some(box_id.clone()))
+            .await
+            .map_err(|e| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to create BoxLite VM: {e}"),
+                )
+            })?;
+
+        let boxlite_id = litebox.id().as_str().to_string();
+
+        litebox.start().await.map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to start BoxLite VM: {e}"),
+            )
+        })?;
+
+        // Update resource tracking
         {
             let mut res = self.resources.lock().await;
             res.total_cpu += cpu;
@@ -188,7 +304,7 @@ impl BoxManager {
                 &box_id,
                 &[
                     ("status", BoxValue::Text("running".into())),
-                    ("boxlite_id", BoxValue::Text(format!("bl_{box_id}"))),
+                    ("boxlite_id", BoxValue::Text(boxlite_id)),
                     ("started_at", BoxValue::Text(now_iso())),
                 ],
             )
@@ -231,8 +347,13 @@ impl BoxManager {
             ));
         }
 
-        // In real implementation: call handle.stop()
-        self.box_handles.remove(&box_data.id);
+        // Stop via BoxLite
+        if let Ok(litebox) = self.get_litebox(&box_data).await {
+            if let Err(e) = litebox.stop().await {
+                tracing::warn!("Failed to stop BoxLite VM: {}", e);
+            }
+        }
+
         {
             let mut res = self.resources.lock().await;
             res.total_cpu -= box_data.cpu;
@@ -288,8 +409,15 @@ impl BoxManager {
             }
         }
 
-        // In real implementation: get handle, call start()
-        self.box_handles.insert(box_data.id.clone(), true);
+        // Start via BoxLite
+        let litebox = self.get_litebox(&box_data).await?;
+        litebox.start().await.map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to start BoxLite VM: {e}"),
+            )
+        })?;
+
         {
             let mut res = self.resources.lock().await;
             res.total_cpu += box_data.cpu;
@@ -320,8 +448,7 @@ impl BoxManager {
                     "Box is running. Use force=true to remove.",
                 ));
             }
-            // Force stop
-            self.box_handles.remove(&box_data.id);
+            // Force stop — release resources
             {
                 let mut res = self.resources.lock().await;
                 res.total_cpu -= box_data.cpu;
@@ -330,7 +457,13 @@ impl BoxManager {
             }
         }
 
-        self.box_handles.remove(&box_data.id);
+        // Remove from BoxLite
+        if let Some(ref boxlite_id) = box_data.boxlite_id {
+            if let Err(e) = self.runtime.remove(boxlite_id, force).await {
+                tracing::warn!("Failed to remove BoxLite VM {}: {}", boxlite_id, e);
+            }
+        }
+
         self.store
             .delete_box(&box_data.id)
             .await
@@ -356,12 +489,7 @@ impl BoxManager {
             ));
         }
 
-        if !self.box_handles.contains_key(&box_data.id) {
-            return Err(BoxRunError::new(
-                ErrorCode::RuntimeError,
-                "BoxLite handle not found",
-            ));
-        }
+        let litebox = self.get_litebox(&box_data).await?;
 
         let exec_id = gen_id("exec");
         let exec_data = self
@@ -370,27 +498,130 @@ impl BoxManager {
             .await
             .map_err(|e| BoxRunError::new(ErrorCode::RuntimeError, e))?;
 
-        // In real implementation: start execution in BoxLite, spawn streaming task.
-        // For now, spawn a task that simulates completion.
+        // Build BoxCommand
+        let effective_workdir = workdir.unwrap_or(&box_data.workdir);
+        let mut box_cmd = BoxCommand::new(&cmd[0]);
+        if cmd.len() > 1 {
+            box_cmd = box_cmd.args(cmd[1..].iter().map(|s| s.as_str()));
+        }
+        box_cmd = box_cmd.working_dir(effective_workdir);
+
+        // Add environment variables
+        if let Some(env_map) = env {
+            for (k, v) in env_map {
+                box_cmd = box_cmd.env(k, v);
+            }
+        }
+
+        // Add timeout
+        if let Some(ms) = timeout_ms {
+            if ms > 0 {
+                box_cmd = box_cmd.timeout(Duration::from_millis(ms as u64));
+            }
+        }
+
+        // Start execution
+        let mut execution = litebox.exec(box_cmd).await.map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to start execution: {e}"),
+            )
+        })?;
+
+        // Take stdout and stderr streams (take-once)
+        let stdout_stream = execution.stdout();
+        let stderr_stream = execution.stderr();
+
+        // Spawn streaming task
         let store = self.store.clone();
         let event_bus = self.event_bus.clone();
         let exec_id_clone = exec_id.clone();
 
         let task = tokio::spawn(async move {
-            // In real implementation: read stdout/stderr streams, publish events
-            // Simulate immediate completion with exit code 0
-            let exit_data = serde_json::json!({"exit_code": 0}).to_string();
+            let seq = Arc::new(AtomicI64::new(0));
+
+            // Spawn stdout reader
+            let stdout_handle = {
+                let seq = seq.clone();
+                let store = store.clone();
+                let event_bus = event_bus.clone();
+                let exec_id = exec_id_clone.clone();
+                tokio::spawn(async move {
+                    if let Some(mut stream) = stdout_stream {
+                        while let Some(chunk) = stream.next().await {
+                            let s = seq.fetch_add(1, Ordering::SeqCst);
+                            let event = Event {
+                                seq: s,
+                                event_type: "stdout".into(),
+                                data: chunk.clone(),
+                                stream: Some("stdout".into()),
+                            };
+                            let _ = store
+                                .append_event(&exec_id, s, "stdout", &chunk, Some("stdout"))
+                                .await;
+                            event_bus.publish(&exec_id, event).await;
+                        }
+                    }
+                })
+            };
+
+            // Spawn stderr reader
+            let stderr_handle = {
+                let seq = seq.clone();
+                let store = store.clone();
+                let event_bus = event_bus.clone();
+                let exec_id = exec_id_clone.clone();
+                tokio::spawn(async move {
+                    if let Some(mut stream) = stderr_stream {
+                        while let Some(chunk) = stream.next().await {
+                            let s = seq.fetch_add(1, Ordering::SeqCst);
+                            let event = Event {
+                                seq: s,
+                                event_type: "stderr".into(),
+                                data: chunk.clone(),
+                                stream: Some("stderr".into()),
+                            };
+                            let _ = store
+                                .append_event(&exec_id, s, "stderr", &chunk, Some("stderr"))
+                                .await;
+                            event_bus.publish(&exec_id, event).await;
+                        }
+                    }
+                })
+            };
+
+            // Wait for both streams to complete
+            let _ = stdout_handle.await;
+            let _ = stderr_handle.await;
+
+            // Get execution result
+            let result = execution.wait().await;
+            let (exit_code, error_msg) = match result {
+                Ok(r) => (r.exit_code as i64, r.error_message),
+                Err(e) => (-1_i64, Some(format!("{e}"))),
+            };
+
+            // Publish exit event
+            let s = seq.load(Ordering::SeqCst);
+            let exit_data = if let Some(ref msg) = error_msg {
+                serde_json::json!({"exit_code": exit_code, "error": msg}).to_string()
+            } else {
+                serde_json::json!({"exit_code": exit_code}).to_string()
+            };
+
             let exit_event = Event {
-                seq: 0,
+                seq: s,
                 event_type: "exit".into(),
                 data: exit_data.clone(),
                 stream: None,
             };
             let _ = store
-                .append_event(&exec_id_clone, 0, "exit", &exit_data, None)
+                .append_event(&exec_id_clone, s, "exit", &exit_data, None)
                 .await;
             event_bus.publish(&exec_id_clone, exit_event).await;
-            let _ = store.finish_exec(&exec_id_clone, 0, None).await;
+            let _ = store
+                .finish_exec(&exec_id_clone, exit_code, error_msg.as_deref())
+                .await;
             event_bus.finish(&exec_id_clone).await;
         });
 
@@ -422,7 +653,8 @@ impl BoxManager {
             ));
         }
 
-        // Cancel the streaming task
+        // Cancel the streaming task (this aborts the tokio task,
+        // which drops the Execution handle and should clean up)
         if let Some((_, task)) = self.exec_tasks.remove(exec_id) {
             task.abort();
         }
@@ -438,8 +670,8 @@ impl BoxManager {
     pub async fn upload_file(
         &self,
         id_or_name: &str,
-        _host_path: &str,
-        _dest_path: &str,
+        host_path: &str,
+        dest_path: &str,
     ) -> Result<(), BoxRunError> {
         let box_data = self.get_box(id_or_name).await?;
         if box_data.status != "running" {
@@ -448,21 +680,31 @@ impl BoxManager {
                 "Box is not running",
             ));
         }
-        if !self.box_handles.contains_key(&box_data.id) {
-            return Err(BoxRunError::new(
-                ErrorCode::RuntimeError,
-                "BoxLite handle not found",
-            ));
-        }
-        // In real implementation: copy_in via BoxLite
-        Ok(())
+
+        let litebox = self.get_litebox(&box_data).await?;
+
+        // Use include_parent=false so the file is placed at dest_path directly
+        let opts = CopyOptions {
+            include_parent: false,
+            ..Default::default()
+        };
+
+        litebox
+            .copy_into(host_path, dest_path, opts)
+            .await
+            .map_err(|e| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to upload file: {e}"),
+                )
+            })
     }
 
     pub async fn download_file(
         &self,
         id_or_name: &str,
-        _src_path: &str,
-        _host_dest: &str,
+        src_path: &str,
+        host_dest: &str,
     ) -> Result<(), BoxRunError> {
         let box_data = self.get_box(id_or_name).await?;
         if box_data.status != "running" {
@@ -471,14 +713,23 @@ impl BoxManager {
                 "Box is not running",
             ));
         }
-        if !self.box_handles.contains_key(&box_data.id) {
-            return Err(BoxRunError::new(
-                ErrorCode::RuntimeError,
-                "BoxLite handle not found",
-            ));
-        }
-        // In real implementation: copy_out via BoxLite
-        Ok(())
+
+        let litebox = self.get_litebox(&box_data).await?;
+
+        let opts = CopyOptions {
+            include_parent: false,
+            ..Default::default()
+        };
+
+        litebox
+            .copy_out(src_path, host_dest, opts)
+            .await
+            .map_err(|e| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to download file: {e}"),
+                )
+            })
     }
 
     // ── GC ───────────────────────────────────────────────────────────────
@@ -491,7 +742,12 @@ impl BoxManager {
             .map_err(|e| BoxRunError::new(ErrorCode::RuntimeError, e))?;
         let count = box_ids.len() as i64;
         for box_id in &box_ids {
-            // In real implementation: remove from BoxLite
+            // Try to remove from BoxLite (may already be gone)
+            if let Ok(Some(box_data)) = self.store.get_box(box_id).await {
+                if let Some(ref boxlite_id) = box_data.boxlite_id {
+                    let _ = self.runtime.remove(boxlite_id, true).await;
+                }
+            }
             self.store
                 .delete_box(box_id)
                 .await

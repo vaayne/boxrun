@@ -24,7 +24,7 @@ pub async fn build_app(db_path: &str) -> Result<(Router, Arc<AppState>), String>
     let event_bus = EventBus::new();
 
     // Initialize box manager
-    let manager = BoxManager::new(store, event_bus);
+    let manager = BoxManager::new(store, event_bus)?;
     manager.init().await?;
 
     let state = Arc::new(AppState { manager });

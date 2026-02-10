@@ -15,22 +15,57 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out BoxLite
+        uses: actions/checkout@v4
+        with:
+          repository: boxlite-ai/boxlite
+          path: ../boxlite
+          submodules: recursive
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Go (for libgvproxy)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm
+
       - run: cargo test --workspace
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out BoxLite
+        uses: actions/checkout@v4
+        with:
+          repository: boxlite-ai/boxlite
+          path: ../boxlite
+          submodules: recursive
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Go (for libgvproxy)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install LLVM (macOS)
+        run: brew install llvm
+
       - run: cargo clippy --workspace -- -D warnings
 
   fmt:
