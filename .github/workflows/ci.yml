@@ -64,6 +64,10 @@ jobs:
     name: Python SDK Compatibility
     runs-on: macos-latest
     needs: [test]
+    # Requires Apple Hypervisor Framework (real VMs). GitHub-hosted runners
+    # lack HVF support, so this job is allowed to fail in CI.
+    # Run manually on a machine with HVF: python tests/compat_test.py
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
