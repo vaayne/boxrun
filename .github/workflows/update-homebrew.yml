@@ -1,0 +1,53 @@
+name: Update Homebrew Tap
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+
+jobs:
+  update-tap:
+    name: Update Formula
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Get release version
+        id: version
+        run: |
+          # Extract version from the tag that triggered the release
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Updating Homebrew formula to $VERSION"
+
+      - name: Download tarball and compute sha256
+        id: sha
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          URL="https://github.com/boxlite-ai/boxrun/releases/download/${VERSION}/boxrun-aarch64-darwin.tar.gz"
+          curl -fSL -o boxrun.tar.gz "$URL"
+          SHA256=$(shasum -a 256 boxrun.tar.gz | awk '{print $1}')
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "SHA256: $SHA256"
+
+      - name: Update tap formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA256="${{ steps.sha.outputs.sha256 }}"
+
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/boxlite-ai/homebrew-tap.git tap
+          cd tap
+
+          # Update version and sha256 in the formula
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/boxrun.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA256}\"/" Formula/boxrun.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/boxrun.rb
+          git commit -m "Update boxrun to ${VERSION}"
+          git push
