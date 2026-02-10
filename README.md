@@ -19,6 +19,11 @@ BoxRun wraps the [BoxLite](https://github.com/boxlite-ai/boxlite) microVM runtim
 > **Requirements:** macOS Apple Silicon (M1+). Linux support coming soon.
 
 ```bash
+# Homebrew
+brew tap boxlite-ai/tap
+brew install boxrun
+
+# Or via install script
 curl -fsSL https://boxlite.ai/boxrun/install | sh
 ```
 
