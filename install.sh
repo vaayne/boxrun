@@ -4,7 +4,7 @@ set -e
 # BoxRun installer — downloads the latest release binary for your platform.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+#   curl -fsSL https://boxlite.ai/boxrun/install | sh
 #
 # Environment variables:
 #   BOXRUN_HOME       Installation directory (default: ~/.boxrun)

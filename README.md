@@ -15,7 +15,7 @@ Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+curl -fsSL https://boxlite.ai/boxrun/install | sh
 ```
 
 ## Quick Start
