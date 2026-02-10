@@ -1248,7 +1248,7 @@ pub async fn upgrade() {
         }
     }
 
-    // Extract archive to install dir
+    // Extract archive to a staging directory, then atomically swap into place.
     let dir = install_dir();
     eprintln!("{}", dim(&format!("Installing to {}...", dir.display())));
 
@@ -1273,32 +1273,67 @@ pub async fn upgrade() {
     // The archive contains a boxrun/ directory
     let extracted = tmp_dir.join("boxrun");
 
-    // Replace binary
+    // Stage new binary next to the real one, then atomic-rename into place.
     let new_binary = extracted.join("boxrun");
     if new_binary.exists() {
         let dest_binary = dir.join("boxrun");
-        if let Err(e) = std::fs::copy(&new_binary, &dest_binary) {
+        let staged_binary = dir.join(".boxrun-new");
+
+        // Copy to staging location in same directory (same filesystem → rename is atomic)
+        if let Err(e) = std::fs::copy(&new_binary, &staged_binary) {
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            eprintln!("{} Failed to replace binary: {e}", red("Error:"));
+            let _ = std::fs::remove_file(&staged_binary);
+            eprintln!("{} Failed to stage new binary: {e}", red("Error:"));
             process::exit(1);
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest_binary, std::fs::Permissions::from_mode(0o755));
+            let _ =
+                std::fs::set_permissions(&staged_binary, std::fs::Permissions::from_mode(0o755));
+        }
+
+        // Atomic rename
+        if let Err(e) = std::fs::rename(&staged_binary, &dest_binary) {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            let _ = std::fs::remove_file(&staged_binary);
+            eprintln!("{} Failed to replace binary: {e}", red("Error:"));
+            process::exit(1);
         }
     }
 
-    // Replace runtime directory
+    // Replace runtime: stage as .runtime-new, remove old, rename into place.
     let new_runtime = extracted.join("runtime");
     if new_runtime.is_dir() {
         let dest_runtime = dir.join("runtime");
+        let staged_runtime = dir.join(".runtime-new");
+
+        if staged_runtime.exists() {
+            let _ = std::fs::remove_dir_all(&staged_runtime);
+        }
+        if let Err(e) = copy_dir_all(&new_runtime, &staged_runtime) {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            let _ = std::fs::remove_dir_all(&staged_runtime);
+            eprintln!("{} Failed to stage runtime: {e}", red("Error:"));
+            process::exit(1);
+        }
+
+        // Swap: remove old, rename new into place
+        let old_runtime = dir.join(".runtime-old");
         if dest_runtime.exists() {
-            let _ = std::fs::remove_dir_all(&dest_runtime);
+            // Move current runtime aside (not delete yet — rollback safety)
+            let _ = std::fs::rename(&dest_runtime, &old_runtime);
         }
-        if let Err(e) = copy_dir_all(&new_runtime, &dest_runtime) {
-            eprintln!("{} Failed to update runtime: {e}", red("Error:"));
+        if let Err(e) = std::fs::rename(&staged_runtime, &dest_runtime) {
+            // Rollback: restore old runtime
+            if old_runtime.exists() {
+                let _ = std::fs::rename(&old_runtime, &dest_runtime);
+            }
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            eprintln!("{} Failed to replace runtime: {e}", red("Error:"));
+            process::exit(1);
         }
+        let _ = std::fs::remove_dir_all(&old_runtime);
     }
 
     // Clean up
@@ -1308,7 +1343,7 @@ pub async fn upgrade() {
 }
 
 fn verify_checksum(data: &[u8], filename: &str, checksums_text: &str) {
-    use std::io::Write as _;
+    use sha2::{Digest, Sha256};
 
     // Find the line for our file in checksums.txt
     let expected = checksums_text
@@ -1329,34 +1364,9 @@ fn verify_checksum(data: &[u8], filename: &str, checksums_text: &str) {
         }
     };
 
-    // Compute SHA-256 using the shasum command
-    let mut child = match process::Command::new("shasum")
-        .args(["-a", "256"])
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!(
-                "{}",
-                yellow("Warning: shasum not available, skipping checksum verification")
-            );
-            return;
-        }
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(data);
-    }
-
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-
-    let actual = String::from_utf8_lossy(&output.stdout);
-    let actual_hash = actual.split_whitespace().next().unwrap_or("");
+    // Compute SHA-256 in-process (no external tool dependency)
+    let hash = Sha256::digest(data);
+    let actual_hash = format!("{hash:x}");
 
     if actual_hash != expected {
         eprintln!("{} Checksum verification failed!", red("Error:"));

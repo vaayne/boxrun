@@ -75,20 +75,34 @@ CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.txt
 echo "Downloading boxrun ${TAG} for ${OS}/${ARCH}..."
 curl -fSL "$URL" -o "${TMP}/${ARCHIVE}"
 
+# Portable SHA-256: prefer sha256sum (Linux), fall back to shasum (macOS).
+compute_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo ""
+  fi
+}
+
 # Verify checksum if checksums.txt is available
 if curl -fsSL "$CHECKSUMS_URL" -o "${TMP}/checksums.txt" 2>/dev/null; then
   echo "Verifying checksum..."
   # checksums.txt has lines like: <hash>  <filename>
   EXPECTED=$(grep "$ARCHIVE" "${TMP}/checksums.txt" | awk '{print $1}')
   if [ -n "$EXPECTED" ]; then
-    ACTUAL=$(shasum -a 256 "${TMP}/${ARCHIVE}" | awk '{print $1}')
-    if [ "$ACTUAL" != "$EXPECTED" ]; then
+    ACTUAL=$(compute_sha256 "${TMP}/${ARCHIVE}")
+    if [ -z "$ACTUAL" ]; then
+      echo "Warning: no sha256sum or shasum found, skipping verification"
+    elif [ "$ACTUAL" != "$EXPECTED" ]; then
       echo "Error: Checksum verification failed!"
       echo "  Expected: $EXPECTED"
       echo "  Got:      $ACTUAL"
       exit 1
+    else
+      echo "Checksum verified."
     fi
-    echo "Checksum verified."
   else
     echo "Warning: no checksum entry for ${ARCHIVE}, skipping verification"
   fi

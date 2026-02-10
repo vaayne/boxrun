@@ -69,16 +69,11 @@ jobs:
           cd staging
           tar czf ../${{ matrix.archive }} boxrun
 
-      - name: Generate checksum
-        run: shasum -a 256 ${{ matrix.archive }} >> checksums.txt
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: |
-            ${{ matrix.archive }}
-            checksums.txt
+          path: ${{ matrix.archive }}
 
   release:
     name: Create Release
@@ -89,8 +84,8 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Merge checksums
-        run: cat checksums.txt | sort -k2 | uniq > checksums-final.txt && mv checksums-final.txt checksums.txt
+      - name: Generate checksums
+        run: shasum -a 256 *.tar.gz > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
