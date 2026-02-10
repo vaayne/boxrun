@@ -9,22 +9,31 @@ Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds 
 - **Volume mounts** — share host directories with Docker-style `-v /host:/guest[:ro]`
 - **Web dashboard** — real-time browser UI at `http://localhost:9090/ui`
 - **Dead simple** — one binary, one socket, one SQLite file
+- **Auto-start** — server launches automatically on first command
+- **Shell completions** — bash, zsh, fish, powershell
 
 ## Install
+
+### From source (requires [BoxLite](https://github.com/boxlite-ai/boxlite))
 
 ```bash
 git clone --recurse-submodules https://github.com/boxlite-ai/boxlite.git ../boxlite
 ./scripts/install-local.sh
 ```
 
+### Pre-built binary (macOS Apple Silicon)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+```
+
 ## Quick Start
 
 ```bash
+# One command: create a VM and drop into a shell
+boxrun shell ubuntu
 
-# Start the server
-boxrun serve &
-
-# Create a VM and drop into it
+# Or step by step
 boxrun create ubuntu:24.04 --name dev
 boxrun attach dev
 
@@ -42,6 +51,21 @@ boxrun cp dev:/root/results.csv ./results.csv
 boxrun stop dev
 boxrun start dev
 boxrun rm dev --force
+```
+
+> **Note:** The server starts automatically — no need to run `boxrun serve` manually.
+
+## Shell Completions
+
+```bash
+# Zsh (add to ~/.zshrc)
+eval "$(boxrun completion zsh)"
+
+# Bash (add to ~/.bashrc)
+eval "$(boxrun completion bash)"
+
+# Fish
+boxrun completion fish | source
 ```
 
 ## Python SDK
