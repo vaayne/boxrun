@@ -10,11 +10,20 @@ Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds 
 - **Web dashboard** — real-time browser UI at `http://localhost:9090/ui`
 - **Dead simple** — one binary, one socket, one SQLite file
 
+## Install
+
+```bash
+# Option 1: Download pre-built binary
+curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+
+# Option 2: Build from source (requires boxlite repo at ../boxlite)
+git clone --recurse-submodules https://github.com/boxlite-ai/boxlite.git ../boxlite
+./scripts/install-local.sh
+```
+
 ## Quick Start
 
 ```bash
-# Install (auto-detects platform, downloads single binary)
-curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
 
 # Start the server
 boxrun serve &
