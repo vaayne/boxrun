@@ -3,8 +3,6 @@ set -e
 
 # Build boxrun from source and install to ~/.boxrun with a wrapper at /usr/local/bin/boxrun.
 #
-# Prerequisites: boxlite repo checked out at ../boxlite (sibling directory)
-#
 # Usage:
 #   ./scripts/install-local.sh
 #   BOXRUN_HOME=/opt/boxrun ./scripts/install-local.sh
@@ -13,7 +11,15 @@ BOXRUN_HOME="${BOXRUN_HOME:-$HOME/.boxrun}"
 BIN_DIR="${BOXRUN_BIN_DIR:-/usr/local/bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BOXLITE_ROOT="$(cd "$PROJECT_ROOT/../boxlite" && pwd)"
+BOXLITE_ROOT="$PROJECT_ROOT/../boxlite"
+
+# 0) Auto-clone BoxLite if not present
+if [ ! -d "$BOXLITE_ROOT" ]; then
+  echo "==> BoxLite not found at $BOXLITE_ROOT, cloning..."
+  git clone --recurse-submodules --depth 1 \
+    https://github.com/boxlite-ai/boxlite.git "$BOXLITE_ROOT"
+fi
+BOXLITE_ROOT="$(cd "$BOXLITE_ROOT" && pwd)"
 
 # 1) Build boxrun binary
 echo "==> Building boxrun (release)..."

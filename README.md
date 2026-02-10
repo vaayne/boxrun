@@ -14,15 +14,6 @@ Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds 
 
 ## Install
 
-### From source (requires [BoxLite](https://github.com/boxlite-ai/boxlite))
-
-```bash
-git clone --recurse-submodules https://github.com/boxlite-ai/boxlite.git ../boxlite
-./scripts/install-local.sh
-```
-
-### Pre-built binary (macOS Apple Silicon)
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
 ```
@@ -137,6 +128,16 @@ async fn main() {
 | [Configuration](docs/configuration.md) | Environment variables, resource limits, per-box defaults |
 
 ## Development
+
+### Build from source
+
+```bash
+./scripts/install-local.sh
+```
+
+This will automatically fetch [BoxLite](https://github.com/boxlite-ai/boxlite) if needed, build the binary, and install it.
+
+### Commands
 
 ```sh
 cargo build              # Build all crates

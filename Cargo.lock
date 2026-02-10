@@ -367,6 +367,7 @@ dependencies = [
 [[package]]
 name = "boxlite"
 version = "0.5.10"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -428,6 +429,7 @@ dependencies = [
 [[package]]
 name = "boxlite-shared"
 version = "0.5.10"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "prost",
  "serde",
@@ -498,6 +500,7 @@ dependencies = [
 [[package]]
 name = "bubblewrap-sys"
 version = "0.1.0"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "num_cpus",
 ]
@@ -868,6 +871,7 @@ dependencies = [
 [[package]]
 name = "e2fsprogs-sys"
 version = "0.1.0"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "num_cpus",
 ]
@@ -1725,6 +1729,7 @@ checksum = "459427e2af2b9c839b132acb702a1c654d95e10f8c326bfc2ad11310e458b1c5"
 [[package]]
 name = "libgvproxy-sys"
 version = "0.1.0"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "libc",
 ]
@@ -1732,6 +1737,7 @@ dependencies = [
 [[package]]
 name = "libkrun-sys"
 version = "0.1.0"
+source = "git+https://github.com/boxlite-ai/boxlite.git#cc236c41c841b27cd73638c53634f280398881a5"
 dependencies = [
  "libc",
  "num_cpus",

@@ -194,15 +194,11 @@ where
         .send()
         .await
         .is_err()
+        && !ensure_server().await
     {
-        if !ensure_server().await {
-            eprintln!("{} Could not start BoxRun server.", red("Error:"));
-            eprintln!(
-                "{}",
-                dim("  Try starting manually: boxrun serve")
-            );
-            process::exit(1);
-        }
+        eprintln!("{} Could not start BoxRun server.", red("Error:"));
+        eprintln!("{}", dim("  Try starting manually: boxrun serve"));
+        process::exit(1);
     }
     f().await;
 }
