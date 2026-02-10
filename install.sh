@@ -2,9 +2,17 @@
 set -e
 
 # BoxRun installer — downloads the latest release binary for your platform.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
+#
+# Environment variables:
+#   BOXRUN_HOME       Installation directory (default: ~/.boxrun)
+#   BOXRUN_BIN_DIR    Where to place the wrapper script (default: /usr/local/bin)
 
 REPO="boxlite-ai/boxrun"
-INSTALL_DIR="${BOXRUN_INSTALL_DIR:-/usr/local/bin}"
+BOXRUN_HOME="${BOXRUN_HOME:-$HOME/.boxrun}"
+BIN_DIR="${BOXRUN_BIN_DIR:-/usr/local/bin}"
 
 detect_os() {
   case "$(uname -s)" in
@@ -43,21 +51,50 @@ URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE}"
 
 echo "Downloading boxrun ${LATEST} for ${OS}/${ARCH}..."
 TMP=$(mktemp -d)
-curl -sL "$URL" -o "${TMP}/${ARCHIVE}"
+curl -fSL "$URL" -o "${TMP}/${ARCHIVE}"
 
-echo "Installing to ${INSTALL_DIR}/boxrun..."
+echo "Installing to ${BOXRUN_HOME}..."
+
+# Extract archive (contains boxrun/ directory with binary + runtime/)
 tar xzf "${TMP}/${ARCHIVE}" -C "${TMP}"
 
-if [ -w "$INSTALL_DIR" ]; then
-  mv "${TMP}/boxrun" "${INSTALL_DIR}/boxrun"
-else
-  sudo mv "${TMP}/boxrun" "${INSTALL_DIR}/boxrun"
+# Create installation directory
+mkdir -p "${BOXRUN_HOME}"
+
+# Copy binary and runtime
+cp "${TMP}/boxrun/boxrun" "${BOXRUN_HOME}/boxrun"
+chmod +x "${BOXRUN_HOME}/boxrun"
+
+if [ -d "${TMP}/boxrun/runtime" ]; then
+  rm -rf "${BOXRUN_HOME}/runtime"
+  cp -R "${TMP}/boxrun/runtime" "${BOXRUN_HOME}/runtime"
 fi
 
-chmod +x "${INSTALL_DIR}/boxrun"
 rm -rf "$TMP"
 
-echo "boxrun ${LATEST} installed to ${INSTALL_DIR}/boxrun"
+# Create wrapper script in BIN_DIR
+WRAPPER="${BIN_DIR}/boxrun"
+WRAPPER_CONTENT="#!/bin/sh
+BOXRUN_HOME=\"${BOXRUN_HOME}\"
+export BOXLITE_RUNTIME_DIR=\"\${BOXRUN_HOME}/runtime\"
+export DYLD_LIBRARY_PATH=\"\${BOXRUN_HOME}/runtime\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}\"
+exec \"\${BOXRUN_HOME}/boxrun\" \"\$@\"
+"
+
+echo "Creating wrapper at ${WRAPPER}..."
+if [ -w "$BIN_DIR" ]; then
+  printf '%s' "$WRAPPER_CONTENT" > "$WRAPPER"
+  chmod +x "$WRAPPER"
+else
+  printf '%s' "$WRAPPER_CONTENT" | sudo tee "$WRAPPER" > /dev/null
+  sudo chmod +x "$WRAPPER"
+fi
+
+echo ""
+echo "boxrun ${LATEST} installed successfully!"
+echo "  Binary:  ${BOXRUN_HOME}/boxrun"
+echo "  Runtime: ${BOXRUN_HOME}/runtime/"
+echo "  Wrapper: ${WRAPPER}"
 echo ""
 echo "Get started:"
 echo "  boxrun serve     # Start the server"
