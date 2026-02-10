@@ -1,10 +1,4 @@
-mod app;
-mod box_manager;
 mod cli;
-mod events;
-mod routes;
-mod store;
-mod ui;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;

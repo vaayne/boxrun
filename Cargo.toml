@@ -55,6 +55,7 @@ uuid = { version = "1", features = ["v4"] }
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"
+http-body-util = "0.1"
 
 # Internal crates
 boxrun-types = { path = "crates/boxrun-types" }

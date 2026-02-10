@@ -235,7 +235,7 @@ fn parse_volume(value: &str) -> Result<Value, String> {
 // ── serve ────────────────────────────────────────────────────────────────
 
 pub async fn serve(host: &str, port: u16, socket: Option<&str>) {
-    use crate::app;
+    use boxrun_server::app;
     use boxrun_types::config::db_path;
 
     let db = db_path();

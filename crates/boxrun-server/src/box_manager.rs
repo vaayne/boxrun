@@ -40,7 +40,7 @@ pub struct BoxManager {
     event_bus: EventBus,
     resources: Arc<Mutex<ResourceUsage>>,
     exec_tasks: DashMap<String, tokio::task::JoinHandle<()>>,
-    runtime: BoxliteRuntime,
+    runtime: Option<BoxliteRuntime>,
 }
 
 impl BoxManager {
@@ -52,8 +52,19 @@ impl BoxManager {
             event_bus,
             resources: Arc::new(Mutex::new(ResourceUsage::default())),
             exec_tasks: DashMap::new(),
-            runtime,
+            runtime: Some(runtime),
         })
+    }
+
+    /// Create a BoxManager without a BoxLite runtime (for testing).
+    pub fn new_without_runtime(store: Store, event_bus: EventBus) -> Self {
+        Self {
+            store,
+            event_bus,
+            resources: Arc::new(Mutex::new(ResourceUsage::default())),
+            exec_tasks: DashMap::new(),
+            runtime: None,
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -65,12 +76,16 @@ impl BoxManager {
     }
 
     #[allow(dead_code)]
-    pub fn runtime(&self) -> &BoxliteRuntime {
-        &self.runtime
+    pub fn runtime(&self) -> Option<&BoxliteRuntime> {
+        self.runtime.as_ref()
     }
 
     /// Initialize the manager: recover running boxes from DB.
     pub async fn init(&self) -> Result<(), String> {
+        let runtime = match self.runtime.as_ref() {
+            Some(rt) => rt,
+            None => return Ok(()),
+        };
         let boxes = self.store.list_boxes(None).await?;
         let mut res = self.resources.lock().await;
         for box_data in boxes {
@@ -78,7 +93,7 @@ impl BoxManager {
                 if !matches!(box_data.status.as_str(), "running" | "creating") {
                     continue;
                 }
-                match self.runtime.get(boxlite_id).await {
+                match runtime.get(boxlite_id).await {
                     Ok(Some(_)) => {
                         // Box still exists in BoxLite, track resources
                         res.total_cpu += box_data.cpu;
@@ -119,11 +134,14 @@ impl BoxManager {
 
     /// Get a BoxLite handle for a box, looking up by boxlite_id.
     async fn get_litebox(&self, box_data: &BoxRow) -> Result<boxlite::LiteBox, BoxRunError> {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            BoxRunError::new(ErrorCode::RuntimeError, "BoxLite runtime not available")
+        })?;
         let boxlite_id = box_data
             .boxlite_id
             .as_ref()
             .ok_or_else(|| BoxRunError::new(ErrorCode::RuntimeError, "Box has no BoxLite ID"))?;
-        self.runtime
+        runtime
             .get(boxlite_id)
             .await
             .map_err(|e| {
@@ -272,7 +290,10 @@ impl BoxManager {
         }
 
         // Create the BoxLite VM
-        let litebox = match self.runtime.create(bl_options, Some(box_id.clone())).await {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            BoxRunError::new(ErrorCode::RuntimeError, "BoxLite runtime not available")
+        })?;
+        let litebox = match runtime.create(bl_options, Some(box_id.clone())).await {
             Ok(lb) => lb,
             Err(e) => {
                 // Release reserved resources
@@ -298,7 +319,7 @@ impl BoxManager {
                 res.total_memory_mb -= memory_mb;
                 res.box_count -= 1;
             }
-            let _ = self.runtime.remove(&boxlite_id, true).await;
+            let _ = runtime.remove(&boxlite_id, true).await;
             return Err(BoxRunError::new(
                 ErrorCode::RuntimeError,
                 format!("Failed to start BoxLite VM: {e}"),
@@ -460,8 +481,10 @@ impl BoxManager {
 
         // Remove from BoxLite first, then release resources
         if let Some(ref boxlite_id) = box_data.boxlite_id {
-            if let Err(e) = self.runtime.remove(boxlite_id, force).await {
-                tracing::warn!("Failed to remove BoxLite VM {}: {}", boxlite_id, e);
+            if let Some(runtime) = self.runtime.as_ref() {
+                if let Err(e) = runtime.remove(boxlite_id, force).await {
+                    tracing::warn!("Failed to remove BoxLite VM {}: {}", boxlite_id, e);
+                }
             }
         }
 
@@ -823,7 +846,9 @@ impl BoxManager {
             // Try to remove from BoxLite (may already be gone)
             if let Ok(Some(box_data)) = self.store.get_box(box_id).await {
                 if let Some(ref boxlite_id) = box_data.boxlite_id {
-                    let _ = self.runtime.remove(boxlite_id, true).await;
+                    if let Some(runtime) = self.runtime.as_ref() {
+                        let _ = runtime.remove(boxlite_id, true).await;
+                    }
                 }
             }
             self.store

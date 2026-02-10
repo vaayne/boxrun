@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "BoxRun server and CLI binary"
 
+[lib]
+name = "boxrun_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "boxrun"
 path = "src/main.rs"
@@ -44,3 +48,4 @@ sha2 = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 reqwest = { workspace = true }
+http-body-util = { workspace = true }

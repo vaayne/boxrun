@@ -651,7 +651,22 @@ async fn handle_attach(
         }
     };
 
-    let litebox = match state.manager.runtime().get(boxlite_id).await {
+    let runtime = match state.manager.runtime() {
+        Some(rt) => rt,
+        None => {
+            let _ = socket
+                .send(Message::Text(
+                    json!({"type": "error", "code": "RUNTIME_ERROR", "message": "BoxLite runtime not available"})
+                        .to_string()
+                        .into(),
+                ))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    let litebox = match runtime.get(boxlite_id).await {
         Ok(Some(lb)) => lb,
         _ => {
             let _ = socket
