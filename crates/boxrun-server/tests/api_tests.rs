@@ -47,8 +47,8 @@ async fn json_request(
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body_json: Value =
-        serde_json::from_slice(&body_bytes).unwrap_or_else(|_| json!({"raw": String::from_utf8_lossy(&body_bytes).to_string()}));
+    let body_json: Value = serde_json::from_slice(&body_bytes)
+        .unwrap_or_else(|_| json!({"raw": String::from_utf8_lossy(&body_bytes).to_string()}));
     (status, body_json)
 }
 
@@ -241,8 +241,7 @@ async fn test_get_box_not_found() {
 #[tokio::test]
 async fn test_stop_box_not_found() {
     let (app, _state) = test_app().await;
-    let (status, body) =
-        json_request(&app, Method::POST, "/v1/boxes/nonexistent:stop", None).await;
+    let (status, body) = json_request(&app, Method::POST, "/v1/boxes/nonexistent:stop", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "BOX_NOT_FOUND");
 }
@@ -250,8 +249,7 @@ async fn test_stop_box_not_found() {
 #[tokio::test]
 async fn test_remove_box_not_found() {
     let (app, _state) = test_app().await;
-    let (status, body) =
-        json_request(&app, Method::DELETE, "/v1/boxes/nonexistent", None).await;
+    let (status, body) = json_request(&app, Method::DELETE, "/v1/boxes/nonexistent", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "BOX_NOT_FOUND");
 }
@@ -347,8 +345,7 @@ async fn test_exec_box_not_running() {
 async fn test_unknown_box_action() {
     let (app, state) = test_app().await;
     seed_box(&state, "box_1", None, "running").await;
-    let (status, body) =
-        json_request(&app, Method::POST, "/v1/boxes/box_1:unknown", None).await;
+    let (status, body) = json_request(&app, Method::POST, "/v1/boxes/box_1:unknown", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["message"].as_str().unwrap().contains("Unknown action"));
 }
@@ -387,8 +384,7 @@ async fn test_list_boxes_status_filter() {
     let (app, state) = test_app().await;
     seed_box(&state, "box_1", None, "running").await;
     seed_box(&state, "box_2", None, "stopped").await;
-    let (status, body) =
-        json_request(&app, Method::GET, "/v1/boxes?status=running", None).await;
+    let (status, body) = json_request(&app, Method::GET, "/v1/boxes?status=running", None).await;
     assert_eq!(status, StatusCode::OK);
     let arr = body.as_array().unwrap();
     assert_eq!(arr.len(), 1);
@@ -420,8 +416,7 @@ async fn test_get_box_by_name() {
 async fn test_list_execs_empty() {
     let (app, state) = test_app().await;
     seed_box(&state, "box_1", None, "running").await;
-    let (status, body) =
-        json_request(&app, Method::GET, "/v1/boxes/box_1/execs", None).await;
+    let (status, body) = json_request(&app, Method::GET, "/v1/boxes/box_1/execs", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 0);
 }
@@ -432,8 +427,7 @@ async fn test_list_execs_with_data() {
     seed_box(&state, "box_1", None, "running").await;
     seed_exec(&state, "exec_1", "box_1", "succeeded", Some(0)).await;
     seed_exec(&state, "exec_2", "box_1", "failed", Some(1)).await;
-    let (status, body) =
-        json_request(&app, Method::GET, "/v1/boxes/box_1/execs", None).await;
+    let (status, body) = json_request(&app, Method::GET, "/v1/boxes/box_1/execs", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 2);
 }
@@ -531,7 +525,9 @@ fn boxlite_available() -> bool {
 #[tokio::test]
 async fn test_full_box_lifecycle() {
     if !boxlite_available() {
-        eprintln!("Skipping test_full_box_lifecycle: BoxLite not available (set BOXRUN_TEST_BOXLITE=1)");
+        eprintln!(
+            "Skipping test_full_box_lifecycle: BoxLite not available (set BOXRUN_TEST_BOXLITE=1)"
+        );
         return;
     }
 
@@ -553,18 +549,29 @@ async fn test_full_box_lifecycle() {
     let box_id = body["id"].as_str().unwrap().to_string();
 
     // Get
-    let (status, body) = json_request(&app, Method::GET, &format!("/v1/boxes/{box_id}"), None).await;
+    let (status, body) =
+        json_request(&app, Method::GET, &format!("/v1/boxes/{box_id}"), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "running");
 
     // Stop
-    let (status, _body) =
-        json_request(&app, Method::POST, &format!("/v1/boxes/{box_id}:stop"), None).await;
+    let (status, _body) = json_request(
+        &app,
+        Method::POST,
+        &format!("/v1/boxes/{box_id}:stop"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // Start
-    let (status, _body) =
-        json_request(&app, Method::POST, &format!("/v1/boxes/{box_id}:start"), None).await;
+    let (status, _body) = json_request(
+        &app,
+        Method::POST,
+        &format!("/v1/boxes/{box_id}:start"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // Delete (force since running)
@@ -837,19 +844,17 @@ async fn test_gc_removes_old_stopped() {
         .store()
         .update_box(
             &box_id,
-            &[("stopped_at", BoxValue::Text("2020-01-01T00:00:00+00:00".into()))],
+            &[(
+                "stopped_at",
+                BoxValue::Text("2020-01-01T00:00:00+00:00".into()),
+            )],
         )
         .await
         .unwrap();
 
     // GC
-    let (status, body) = json_request(
-        &app,
-        Method::POST,
-        "/v1/gc",
-        Some(json!({"older_than": 1})),
-    )
-    .await;
+    let (status, body) =
+        json_request(&app, Method::POST, "/v1/gc", Some(json!({"older_than": 1}))).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["removed"].as_i64().unwrap() >= 1);
 }
