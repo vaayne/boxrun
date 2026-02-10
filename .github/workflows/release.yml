@@ -28,7 +28,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-unknown-linux-musl
 
       - uses: Swatinem/rust-cache@v2
 
@@ -42,58 +42,26 @@ jobs:
         run: brew install llvm lld protobuf
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin boxrun
+        run: cargo build --release --bin boxrun
 
-      - name: Package binary with runtime
+      - name: Build BoxLite runtime
         run: |
-          # Create staging directory
+          LIBS_DIR=$(find target/release/build -path "*/boxlite-*/out/runtime" -type d | head -1)
+          bash ../boxlite/scripts/build/build-runtime.sh \
+            --dest-dir "$PWD/target/boxlite-runtime" \
+            --libs-dir "$LIBS_DIR"
+
+      - name: Package archive
+        run: |
           mkdir -p staging/boxrun/runtime
-
-          # Copy binary
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} staging/boxrun/
-
-          # Set RPATH so binary finds dylibs in runtime/ relative to itself
+          cp target/release/${{ matrix.binary }} staging/boxrun/
           install_name_tool -add_rpath @executable_path/runtime staging/boxrun/${{ matrix.binary }}
+          cp target/boxlite-runtime/* staging/boxrun/runtime/
 
-          # Collect runtime files from all BoxLite build directories
-          # (different crates may produce different runtime files)
-          FOUND=0
-          for d in $(find target/${{ matrix.target }}/release/build -path "*/boxlite-*/out/runtime" -type d 2>/dev/null) \
-                   $(find target/${{ matrix.target }}/release/build -path "*/libkrun-sys-*/out" -type d 2>/dev/null); do
-            echo "Scanning: $d"
-            for f in $(ls "$d/" 2>/dev/null); do
-              case "$f" in
-                libkrun*|libkrunfw*|libgvproxy*|boxlite-guest|boxlite-shim|debugfs|mke2fs)
-                  if [ ! -e "staging/boxrun/runtime/$f" ]; then
-                    echo "  Copying: $f"
-                    cp "$d/$f" staging/boxrun/runtime/
-                    FOUND=1
-                  fi
-                  ;;
-              esac
-            done
-          done
+          echo "=== Contents ==="
+          ls -lh staging/boxrun/
+          ls -lh staging/boxrun/runtime/
 
-          if [ "$FOUND" = "0" ]; then
-            echo "Error: No runtime files found in build output"
-            find target/${{ matrix.target }}/release/build -name "*.dylib" -o -name "boxlite-guest" 2>/dev/null | head -20
-            exit 1
-          fi
-
-          echo "=== Staged binary ==="
-          ls -la staging/boxrun/
-          echo "=== Staged runtime ==="
-          ls -la staging/boxrun/runtime/
-
-          # Verify essential files
-          for required in libkrun libgvproxy; do
-            if ! ls staging/boxrun/runtime/${required}* >/dev/null 2>&1; then
-              echo "Error: Missing required runtime file: ${required}"
-              exit 1
-            fi
-          done
-
-          # Create archive
           cd staging
           tar czf ../${{ matrix.archive }} boxrun
 
