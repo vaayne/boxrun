@@ -11,7 +11,8 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "boxrun",
-    about = "BoxRun - Local execution platform built on BoxLite"
+    about = "BoxRun - Local execution platform built on BoxLite",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (rust)"),
 )]
 struct Cli {
     #[command(subcommand)]
