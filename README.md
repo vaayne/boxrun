@@ -7,7 +7,7 @@ BoxRun wraps the [BoxLite](https://github.com/boxlite-ai/boxlite) microVM runtim
 ## Why BoxRun?
 
 - **Millisecond boot times** — VMs start in <500ms, not minutes
-- **Real Linux VMs** — full kernel isolation via [BoxLite](https://github.com/boxlite-ai/boxlite) microVM technology, not containers
+- **Real Linux VMs** — full kernel isolation via microVM technology, not containers
 - **Volume mounts** — share host directories with Docker-style `-v /host:/guest[:ro]`
 - **Web dashboard** — real-time browser UI at `http://localhost:9090/ui`
 - **Dead simple** — one binary, one socket, one SQLite file
@@ -15,6 +15,8 @@ BoxRun wraps the [BoxLite](https://github.com/boxlite-ai/boxlite) microVM runtim
 - **Shell completions** — bash, zsh, fish, powershell
 
 ## Install
+
+> **Requirements:** macOS Apple Silicon (M1+). Linux support coming soon.
 
 ```bash
 curl -fsSL https://boxlite.ai/boxrun/install | sh
@@ -47,19 +49,6 @@ boxrun rm dev --force
 ```
 
 > **Note:** The server starts automatically — no need to run `boxrun serve` manually.
-
-## Shell Completions
-
-```bash
-# Zsh (add to ~/.zshrc)
-eval "$(boxrun completion zsh)"
-
-# Bash (add to ~/.bashrc)
-eval "$(boxrun completion bash)"
-
-# Fish
-boxrun completion fish | source
-```
 
 ## Python SDK
 
@@ -106,17 +95,36 @@ use boxrun_sdk::client::BoxRunClient;
 #[tokio::main]
 async fn main() {
     let client = BoxRunClient::new(None);
-    let mut box_handle = client.create(
-        "ubuntu", Some("mybox"), 2, 1024, 8, false, "/root", None, None,
+    let mut bx = client.create(
+        "ubuntu",           // image
+        Some("mybox"),      // name
+        2,                  // cpus
+        1024,               // memory_mb
+        8,                  // disk_size_gb
+        false,              // network
+        "/root",            // workdir
+        None,               // env
+        None,               // volumes
     ).await.unwrap();
 
-    let exec = box_handle.exec(
-        &["echo".into(), "hello".into()], None, None,
-    ).await.unwrap();
-
+    let exec = bx.exec(&["echo", "hello"], None, None).await.unwrap();
     println!("Exit code: {:?}", exec.exit_code);
-    box_handle.remove(true).await.unwrap();
+
+    bx.remove(true).await.unwrap();
 }
+```
+
+## Shell Completions
+
+```bash
+# Zsh (add to ~/.zshrc)
+eval "$(boxrun completion zsh)"
+
+# Bash (add to ~/.bashrc)
+eval "$(boxrun completion bash)"
+
+# Fish
+boxrun completion fish | source
 ```
 
 ## Documentation
