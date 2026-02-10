@@ -52,11 +52,7 @@ boxrun rm dev --force
 
 ## Python SDK
 
-Install the Python SDK separately:
-
-```bash
-pip install boxrun
-```
+> Python SDK is coming soon.
 
 ```python
 import asyncio

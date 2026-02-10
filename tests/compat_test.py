@@ -6,7 +6,7 @@ Verifies the Rust server is 100% API-compatible with the Python SDK.
 Runs real BoxLite VMs against a live server.
 
 Prerequisites:
-    pip install boxrun          # Python SDK (from boxrun-py repo)
+    pip install boxrun          # Python SDK
 
 Usage:
     # 1. Start the Rust server
