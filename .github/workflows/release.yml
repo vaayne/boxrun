@@ -24,11 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check out BoxLite
-        uses: actions/checkout@v4
-        with:
-          repository: boxlite-ai/boxlite
-          path: ../boxlite
-          submodules: recursive
+        run: git clone --recurse-submodules --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,7 +39,7 @@ jobs:
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
-        run: brew install llvm
+        run: brew install llvm lld protobuf
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} --bin boxrun
