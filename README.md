@@ -13,10 +13,6 @@ Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds 
 ## Install
 
 ```bash
-# Option 1: Download pre-built binary
-curl -fsSL https://raw.githubusercontent.com/boxlite-ai/boxrun/main/install.sh | sh
-
-# Option 2: Build from source (requires boxlite repo at ../boxlite)
 git clone --recurse-submodules https://github.com/boxlite-ai/boxlite.git ../boxlite
 ./scripts/install-local.sh
 ```
