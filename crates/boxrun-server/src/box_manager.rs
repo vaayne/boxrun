@@ -692,21 +692,53 @@ impl BoxManager {
 
         let litebox = self.get_litebox(&box_data).await?;
 
-        // Use include_parent=false so the file is placed at dest_path directly
+        // BoxLite copy_into treats dest as a directory and uses the source filename.
+        // Rename the host file to match the desired dest filename, then copy to parent dir.
+        let dest = std::path::Path::new(dest_path);
+        let dest_name = dest.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Invalid destination path (no filename): {dest_path}"),
+            )
+        })?;
+        let dest_dir = dest
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+
+        let host = std::path::Path::new(host_path);
+        let renamed = host.with_file_name(dest_name);
+
+        // Rename (or copy) the source file to match the desired dest name
+        if host_path != renamed.to_string_lossy() {
+            std::fs::copy(host_path, &renamed).map_err(|e| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to rename upload file: {e}"),
+                )
+            })?;
+        }
+
         let opts = CopyOptions {
             include_parent: false,
             ..Default::default()
         };
 
-        litebox
-            .copy_into(host_path, dest_path, opts)
-            .await
-            .map_err(|e| {
-                BoxRunError::new(
-                    ErrorCode::RuntimeError,
-                    format!("Failed to upload file: {e}"),
-                )
-            })
+        let result = litebox
+            .copy_into(renamed.to_str().unwrap_or(""), &dest_dir, opts)
+            .await;
+
+        // Clean up the renamed file (if we created a copy)
+        if host_path != renamed.to_string_lossy() {
+            let _ = std::fs::remove_file(&renamed);
+        }
+
+        result.map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to upload file: {e}"),
+            )
+        })
     }
 
     pub async fn download_file(
@@ -725,20 +757,57 @@ impl BoxManager {
 
         let litebox = self.get_litebox(&box_data).await?;
 
+        // BoxLite copy_out treats host_dest as a directory, placing the file with
+        // its container filename inside. Use a temp dir, then move the result.
+        let src_name = std::path::Path::new(src_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Invalid source path (no filename): {src_path}"),
+                )
+            })?;
+
+        let tmp_dir = tempfile::tempdir().map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to create temp dir: {e}"),
+            )
+        })?;
+
         let opts = CopyOptions {
             include_parent: false,
             ..Default::default()
         };
 
         litebox
-            .copy_out(src_path, host_dest, opts)
+            .copy_out(src_path, tmp_dir.path().to_str().unwrap_or(""), opts)
             .await
             .map_err(|e| {
                 BoxRunError::new(
                     ErrorCode::RuntimeError,
                     format!("Failed to download file: {e}"),
                 )
-            })
+            })?;
+
+        // Move the downloaded file from temp dir to the final destination
+        let copied_file = tmp_dir.path().join(src_name);
+        if !copied_file.exists() {
+            return Err(BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("File '{src_path}' not found in box"),
+            ));
+        }
+
+        std::fs::copy(&copied_file, host_dest).map_err(|e| {
+            BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to move downloaded file: {e}"),
+            )
+        })?;
+
+        Ok(())
     }
 
     // ── GC ───────────────────────────────────────────────────────────────
