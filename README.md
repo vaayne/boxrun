@@ -57,11 +57,13 @@ boxrun rm dev --force
 
 ## Python SDK
 
-> Python SDK is coming soon.
+```bash
+pip install boxrun-sdk
+```
 
 ```python
 import asyncio
-from boxrun import BoxRunClient
+from boxrun_sdk import BoxRunClient
 
 async def main():
     async with BoxRunClient() as client:
@@ -165,6 +167,8 @@ crates/
 ├── boxrun-types/     # Shared types (errors, models, config)
 ├── boxrun-server/    # Server + CLI binary
 └── boxrun-sdk/       # Rust SDK crate
+sdk/
+└── python/           # Python SDK (boxrun-sdk on PyPI)
 ```
 
 ## License

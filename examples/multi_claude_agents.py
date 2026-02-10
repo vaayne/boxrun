@@ -21,7 +21,7 @@ import os
 import shlex
 import sys
 
-from boxrun import BoxRunClient
+from boxrun_sdk import BoxRunClient
 
 
 async def setup_claude_code(box):

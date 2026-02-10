@@ -7,7 +7,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from boxrun import BoxRunClient
+from boxrun_sdk import BoxRunClient
 
 
 async def main():

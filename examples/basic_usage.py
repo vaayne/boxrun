@@ -5,7 +5,7 @@ Prerequisites: boxrun serve
 
 import asyncio
 
-from boxrun import BoxRunClient
+from boxrun_sdk import BoxRunClient
 
 
 async def main():

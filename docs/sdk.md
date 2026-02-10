@@ -2,8 +2,12 @@
 
 The BoxRun Python SDK provides an async client for managing boxes programmatically.
 
+```bash
+pip install boxrun-sdk
+```
+
 ```python
-from boxrun import BoxRunClient
+from boxrun_sdk import BoxRunClient
 ```
 
 ## Connection
@@ -202,7 +206,7 @@ class RunResult:
 All SDK errors raise `BoxRunError(code, message)`.
 
 ```python
-from boxrun.common.errors import BoxRunError
+from boxrun_sdk import BoxRunError
 
 try:
     box = await client.create("ubuntu:24.04")

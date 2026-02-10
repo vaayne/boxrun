@@ -6,7 +6,7 @@ Verifies the Rust server is 100% API-compatible with the Python SDK.
 Runs real BoxLite VMs against a live server.
 
 Prerequisites:
-    pip install boxrun          # Python SDK
+    pip install boxrun-sdk       # Python SDK
 
 Usage:
     # 1. Start the Rust server
@@ -25,9 +25,9 @@ import time
 import traceback
 from pathlib import Path
 
-from boxrun.sdk.client import BoxHandle, BoxRunClient
-from boxrun.sdk.types import BoxInfo, ExecEvent, ExecInfo, RunResult
-from boxrun.common.errors import BoxRunError
+from boxrun_sdk import BoxHandle, BoxRunClient
+from boxrun_sdk import BoxInfo, ExecEvent, ExecInfo, RunResult
+from boxrun_sdk import BoxRunError
 
 SERVER_URL = os.environ.get("BOXRUN_TEST_URL", "http://127.0.0.1:9099")
 passed = 0
