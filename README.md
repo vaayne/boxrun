@@ -1,11 +1,13 @@
 # BoxRun [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/bCmaK4Ce)
 
-Ultra-lightweight local VM platform. Spin up isolated Linux VMs in milliseconds — no Docker, no Vagrant, no heavyweight hypervisor.
+Ultra-lightweight sandbox platform for developers and AI agents. Powered by [BoxLite](https://github.com/boxlite-ai/boxlite).
+
+BoxRun wraps the [BoxLite](https://github.com/boxlite-ai/boxlite) microVM runtime into a batteries-included platform: a REST API server, CLI, web dashboard, and SDKs for Python and Rust — all in a single binary.
 
 ## Why BoxRun?
 
 - **Millisecond boot times** — VMs start in <500ms, not minutes
-- **Real Linux VMs** — full kernel isolation via microVM technology, not containers
+- **Real Linux VMs** — full kernel isolation via [BoxLite](https://github.com/boxlite-ai/boxlite) microVM technology, not containers
 - **Volume mounts** — share host directories with Docker-style `-v /host:/guest[:ro]`
 - **Web dashboard** — real-time browser UI at `http://localhost:9090/ui`
 - **Dead simple** — one binary, one socket, one SQLite file
