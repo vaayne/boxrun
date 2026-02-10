@@ -1,0 +1,39 @@
+[package]
+name = "boxrun-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BoxRun server and CLI binary"
+
+[[bin]]
+name = "boxrun"
+path = "src/main.rs"
+
+[dependencies]
+boxrun-types = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+nanoid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+dashmap = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }

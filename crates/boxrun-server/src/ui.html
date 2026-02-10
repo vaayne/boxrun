@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoxRun Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+  --text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;
+  --green:#3fb950;--yellow:#d29922;--red:#f85149;--gray:#8b949e;
+  --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.header h1{font-size:20px;font-weight:600;font-family:var(--mono);letter-spacing:-0.5px}
+.header h1 span{color:var(--accent)}
+.refresh-indicator{display:flex;align-items:center;gap:8px;color:var(--text2);font-size:12px;font-family:var(--mono)}
+.refresh-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 3s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Resource bar */
+.resource-bar{display:flex;gap:24px;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg2);flex-wrap:wrap}
+.resource-item{display:flex;flex-direction:column;gap:4px;min-width:140px}
+.resource-label{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);font-family:var(--mono)}
+.resource-value{font-size:18px;font-weight:600;font-family:var(--mono)}
+.resource-meter{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;width:120px}
+.resource-meter-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.resource-meter-fill.warn{background:var(--yellow)}
+.resource-meter-fill.crit{background:var(--red)}
+
+/* Main content */
+.main{padding:24px;max-width:1200px;margin:0 auto}
+.section-title{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-bottom:12px;font-family:var(--mono)}
+
+/* Table */
+.box-table{width:100%;border-collapse:collapse;font-size:13px}
+.box-table th{text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);color:var(--text2);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;font-family:var(--mono);white-space:nowrap}
+.box-table td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.box-table tr:hover td{background:var(--bg2)}
+.box-table tr.expandable{cursor:pointer}
+
+/* Status badge */
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500;font-family:var(--mono);line-height:1.4}
+.badge-running{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
+.badge-creating{background:rgba(210,153,34,.15);color:var(--yellow);border:1px solid rgba(210,153,34,.3)}
+.badge-stopped{background:rgba(139,148,158,.15);color:var(--gray);border:1px solid rgba(139,148,158,.3)}
+.badge-error{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3)}
+
+/* Mono text */
+.mono{font-family:var(--mono);font-size:12px;color:var(--text2)}
+
+/* Actions */
+.actions{display:flex;gap:6px}
+.btn{padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-family:var(--mono);cursor:pointer;white-space:nowrap;transition:border-color .15s}
+.btn:hover{border-color:var(--accent)}
+.btn-danger{color:var(--red)}
+.btn-danger:hover{border-color:var(--red)}
+.btn-success{color:var(--green)}
+.btn-success:hover{border-color:var(--green)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* Exec detail row */
+.exec-row td{padding:0!important;background:var(--bg)!important}
+.exec-panel{padding:12px 24px;border-left:3px solid var(--accent)}
+.exec-panel h4{font-size:12px;font-family:var(--mono);color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}
+.exec-list{display:flex;flex-direction:column;gap:6px}
+.exec-item{display:flex;align-items:center;gap:12px;padding:6px 10px;background:var(--bg2);border-radius:6px;font-family:var(--mono);font-size:12px}
+.exec-cmd{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exec-exit{min-width:40px;text-align:right}
+.exit-ok{color:var(--green)}
+.exit-fail{color:var(--red)}
+.exec-time{color:var(--text2);min-width:80px}
+
+/* Empty state */
+.empty{text-align:center;padding:48px;color:var(--text2)}
+.empty p{margin-top:8px;font-family:var(--mono);font-size:13px}
+
+/* Toast */
+.toast{position:fixed;bottom:20px;right:20px;padding:10px 16px;border-radius:8px;font-size:13px;font-family:var(--mono);z-index:100;animation:slideIn .2s;max-width:360px}
+.toast-error{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3)}
+.toast-ok{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
+@keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+/* Responsive */
+@media(max-width:768px){
+  .resource-bar{gap:16px;padding:12px 16px}
+  .main{padding:16px}
+  .box-table{font-size:12px}
+  .box-table th,.box-table td{padding:6px 8px}
+  .header{padding:12px 16px}
+  .col-hide-sm{display:none}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>Box</span>Run</h1>
+  <div class="refresh-indicator">
+    <div class="refresh-dot"></div>
+    <span>auto-refresh</span>
+  </div>
+</div>
+
+<div class="resource-bar" id="resources">
+  <div class="resource-item">
+    <div class="resource-label">Boxes</div>
+    <div class="resource-value" id="res-boxes">-</div>
+  </div>
+  <div class="resource-item">
+    <div class="resource-label">CPU Cores</div>
+    <div class="resource-value" id="res-cpu">-</div>
+    <div class="resource-meter"><div class="resource-meter-fill" id="meter-cpu" style="width:0%"></div></div>
+  </div>
+  <div class="resource-item">
+    <div class="resource-label">Memory</div>
+    <div class="resource-value" id="res-mem">-</div>
+    <div class="resource-meter"><div class="resource-meter-fill" id="meter-mem" style="width:0%"></div></div>
+  </div>
+  <div class="resource-item">
+    <div class="resource-label">Disk</div>
+    <div class="resource-value" id="res-disk">-</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="section-title">Boxes</div>
+  <div id="table-container"></div>
+</div>
+
+<script>
+let MAX_CPU = 0;
+let MAX_MEM = 0;
+
+let boxes = [];
+let expandedBox = null;
+let execs = {};
+
+function statusBadge(s) {
+  const es = escapeHtml(s);
+  return '<span class="badge badge-' + es + '">' + es + '</span>';
+}
+
+function timeAgo(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+function formatMem(mb) {
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+  return mb + ' MB';
+}
+
+function setMeter(id, used, max) {
+  const pct = max > 0 ? Math.min(100, (used / max) * 100) : 0;
+  const el = document.getElementById(id);
+  el.style.width = pct + '%';
+  el.className = 'resource-meter-fill' + (pct > 80 ? ' crit' : pct > 60 ? ' warn' : '');
+}
+
+function updateResources() {
+  const running = boxes.filter(b => b.status === 'running' || b.status === 'creating');
+  const cpuUsed = running.reduce((a, b) => a + b.cpu, 0);
+  const memUsed = running.reduce((a, b) => a + b.memory_mb, 0);
+  const diskUsed = running.reduce((a, b) => a + (b.disk_size_gb || 0), 0);
+  document.getElementById('res-boxes').textContent = boxes.length;
+  document.getElementById('res-cpu').textContent = cpuUsed + ' / ' + MAX_CPU;
+  document.getElementById('res-mem').textContent = formatMem(memUsed) + ' / ' + formatMem(MAX_MEM);
+  document.getElementById('res-disk').textContent = diskUsed + ' GB';
+  setMeter('meter-cpu', cpuUsed, MAX_CPU);
+  setMeter('meter-mem', memUsed, MAX_MEM);
+}
+
+function renderTable() {
+  const c = document.getElementById('table-container');
+  if (boxes.length === 0) {
+    c.innerHTML = '<div class="empty"><p>No boxes yet.</p><p>Create one with: boxrun create ubuntu:24.04</p></div>';
+    return;
+  }
+  let html = '<table class="box-table"><thead><tr>';
+  html += '<th>ID</th><th>Name</th><th>Status</th><th class="col-hide-sm">Image</th>';
+  html += '<th>CPU</th><th>Mem</th><th>Disk</th><th class="col-hide-sm">Created</th><th>Actions</th>';
+  html += '</tr></thead><tbody>';
+  for (const b of boxes) {
+    const isRunning = b.status === 'running';
+    const isStopped = b.status === 'stopped';
+    const created = b.created_at ? b.created_at.slice(0, 19) : '-';
+    const eid = escapeHtml(b.id);
+    const ename = b.name ? escapeHtml(b.name) : '<span class="mono" style="color:var(--text2)">-</span>';
+    const eimage = escapeHtml(b.image);
+    html += '<tr class="expandable" data-id="' + eid + '">';
+    html += '<td class="mono">' + eid + '</td>';
+    html += '<td>' + ename + '</td>';
+    html += '<td>' + statusBadge(b.status) + '</td>';
+    html += '<td class="col-hide-sm mono">' + eimage + '</td>';
+    html += '<td class="mono">' + b.cpu + '</td>';
+    html += '<td class="mono">' + formatMem(b.memory_mb) + '</td>';
+    html += '<td class="mono">' + (b.disk_size_gb || '-') + ' GB</td>';
+    html += '<td class="col-hide-sm mono">' + created + '</td>';
+    html += '<td class="actions">';
+    if (isRunning) {
+      html += '<button class="btn" data-box="' + eid + '" data-action="stop">stop</button>';
+    }
+    if (isStopped) {
+      html += '<button class="btn btn-success" data-box="' + eid + '" data-action="start">start</button>';
+    }
+    html += '<button class="btn btn-danger" data-box="' + eid + '" data-action="delete">rm</button>';
+    html += '</td></tr>';
+    if (expandedBox === b.id) {
+      html += '<tr class="exec-row"><td colspan="9">' + renderExecPanel(b.id) + '</td></tr>';
+    }
+  }
+  html += '</tbody></table>';
+  c.innerHTML = html;
+  c.querySelectorAll('tr.expandable').forEach(row => {
+    row.addEventListener('click', () => toggleExpand(row.dataset.id));
+  });
+  c.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      boxAction(btn.dataset.box, btn.dataset.action);
+    });
+  });
+}
+
+function renderExecPanel(boxId) {
+  const list = execs[boxId];
+  if (!list) return '<div class="exec-panel"><p class="mono" style="color:var(--text2)">Loading executions...</p></div>';
+  if (list.length === 0) return '<div class="exec-panel"><p class="mono" style="color:var(--text2)">No executions.</p></div>';
+  let html = '<div class="exec-panel"><h4>Executions</h4><div class="exec-list">';
+  for (const e of list) {
+    const exitClass = e.exit_code === 0 ? 'exit-ok' : (e.exit_code !== null ? 'exit-fail' : '');
+    const exitText = e.exit_code !== null ? ('exit ' + e.exit_code) : statusBadge(e.status);
+    html += '<div class="exec-item">';
+    html += '<span class="mono" style="color:var(--text2)">' + escapeHtml(e.id.slice(0, 15)) + '</span>';
+    html += '<span class="exec-cmd">' + escapeHtml(e.cmd.join(' ')) + '</span>';
+    html += '<span class="exec-time">' + timeAgo(e.created_at) + '</span>';
+    html += '<span class="exec-exit ' + exitClass + '">' + exitText + '</span>';
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function toggleExpand(id) {
+  if (expandedBox === id) {
+    expandedBox = null;
+    renderTable();
+    return;
+  }
+  expandedBox = id;
+  execs[id] = null;
+  renderTable();
+  await fetchExecs(id);
+}
+
+async function fetchExecs(boxId) {
+  try {
+    const r = await fetch('/v1/boxes/' + boxId + '/execs');
+    if (r.ok) {
+      execs[boxId] = await r.json();
+    } else {
+      execs[boxId] = [];
+    }
+  } catch {
+    execs[boxId] = [];
+  }
+  renderTable();
+}
+
+async function boxAction(id, action) {
+  try {
+    let r;
+    if (action === 'stop') {
+      r = await fetch('/v1/boxes/' + id + ':stop', { method: 'POST' });
+    } else if (action === 'start') {
+      r = await fetch('/v1/boxes/' + id + ':start', { method: 'POST' });
+    } else if (action === 'delete') {
+      r = await fetch('/v1/boxes/' + id + '?force=true', { method: 'DELETE' });
+      if (r.ok && expandedBox === id) expandedBox = null;
+    }
+    if (r && !r.ok) {
+      const body = await r.json().catch(() => ({}));
+      showToast(body.message || ('Action failed: ' + r.status), true);
+    } else {
+      showToast(action + ' ok', false);
+    }
+    await refresh();
+  } catch (err) {
+    showToast('Error: ' + err.message, true);
+  }
+}
+
+function showToast(msg, isError) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const t = document.createElement('div');
+  t.className = 'toast ' + (isError ? 'toast-error' : 'toast-ok');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/v1/boxes');
+    if (r.ok) {
+      boxes = await r.json();
+      boxes.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      updateResources();
+      renderTable();
+    } else {
+      showToast('API error: ' + r.status, true);
+    }
+  } catch (err) {
+    showToast('Cannot reach server', true);
+  }
+}
+
+async function fetchInfo() {
+  try {
+    const r = await fetch('/v1/info');
+    if (r.ok) {
+      const info = await r.json();
+      MAX_CPU = info.max_cpu;
+      MAX_MEM = info.max_memory_mb;
+    }
+  } catch (err) {
+    console.error('BoxRun info fetch error:', err);
+  }
+}
+
+// Initial load + auto-refresh
+fetchInfo().then(() => refresh());
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
