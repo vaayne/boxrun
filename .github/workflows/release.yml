@@ -15,10 +15,12 @@ jobs:
     strategy:
       matrix:
         include:
+          # macOS (ARM) — primary platform
           - target: aarch64-apple-darwin
             os: macos-latest
             binary: boxrun
             archive: boxrun-aarch64-darwin.tar.gz
+          # TODO: Add Linux targets (x86_64-unknown-linux-musl, aarch64-unknown-linux-musl)
 
     steps:
       - uses: actions/checkout@v4
@@ -67,11 +69,16 @@ jobs:
           cd staging
           tar czf ../${{ matrix.archive }} boxrun
 
+      - name: Generate checksum
+        run: shasum -a 256 ${{ matrix.archive }} >> checksums.txt
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            checksums.txt
 
   release:
     name: Create Release
@@ -82,9 +89,13 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Merge checksums
+        run: cat checksums.txt | sort -k2 | uniq > checksums-final.txt && mv checksums-final.txt checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             boxrun-aarch64-darwin.tar.gz
+            checksums.txt
           generate_release_notes: true

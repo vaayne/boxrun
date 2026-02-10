@@ -163,10 +163,28 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Self-update to the latest release
+    Upgrade,
+    /// Remove boxrun from the system
+    Uninstall,
 }
 
 #[tokio::main]
 async fn main() {
+    // Auto-detect runtime directory from executable location.
+    // If BOXLITE_RUNTIME_DIR is not set, assume runtime/ lives next to the binary.
+    // This eliminates the need for a wrapper script to set the env var.
+    if std::env::var("BOXLITE_RUNTIME_DIR").is_err() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let runtime_dir = exe_dir.join("runtime");
+                if runtime_dir.is_dir() {
+                    std::env::set_var("BOXLITE_RUNTIME_DIR", &runtime_dir);
+                }
+            }
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -244,6 +262,12 @@ async fn main() {
         }
         Commands::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "boxrun", &mut std::io::stdout());
+        }
+        Commands::Upgrade => {
+            cli::upgrade().await;
+        }
+        Commands::Uninstall => {
+            cli::uninstall().await;
         }
     }
 }

@@ -52,6 +52,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
+flate2 = "1"
+tar = "0.4"
 
 # Internal crates
 boxrun-types = { path = "crates/boxrun-types" }

@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use boxrun_types::config::{resolve_image, socket_path, IMAGE_CATALOG};
@@ -1117,4 +1117,328 @@ pub fn images() {
     for (alias, (image, description)) in IMAGE_CATALOG.iter() {
         println!("{:<12} {:<25} {}", green(alias), image, description);
     }
+}
+
+// ── upgrade ──────────────────────────────────────────────────────────────
+
+const GITHUB_REPO: &str = "boxlite-ai/boxrun";
+
+fn current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+fn install_dir() -> PathBuf {
+    std::env::current_exe()
+        .expect("cannot determine executable path")
+        .parent()
+        .expect("executable has no parent directory")
+        .to_path_buf()
+}
+
+fn detect_archive_name() -> String {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "unknown"
+    };
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    format!("boxrun-{arch}-{os}.tar.gz")
+}
+
+pub async fn upgrade() {
+    let current = current_version();
+    eprintln!("Current version: v{current}");
+    eprintln!("{}", dim("Checking for updates..."));
+
+    // Fetch latest release info from GitHub API
+    let api_url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+    let resp = match client()
+        .get(&api_url)
+        .header("User-Agent", "boxrun-upgrade")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{} Failed to check for updates: {e}", red("Error:"));
+            process::exit(1);
+        }
+    };
+
+    let body: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{} Failed to parse release info: {e}", red("Error:"));
+            process::exit(1);
+        }
+    };
+
+    let tag = body.get("tag_name").and_then(|v| v.as_str()).unwrap_or("");
+    if tag.is_empty() {
+        eprintln!("{} Could not determine latest release tag", red("Error:"));
+        process::exit(1);
+    }
+
+    let latest = tag.strip_prefix('v').unwrap_or(tag);
+    if latest == current {
+        println!("{}", green("Already up to date."));
+        return;
+    }
+
+    println!("New version available: v{current} -> {tag}");
+
+    let archive_name = detect_archive_name();
+    let download_url =
+        format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{archive_name}");
+    let checksums_url =
+        format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/checksums.txt");
+
+    // Download archive
+    eprintln!("{}", dim(&format!("Downloading {archive_name}...")));
+    let archive_bytes = match client()
+        .get(&download_url)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+    {
+        Ok(r) => {
+            if !r.status().is_success() {
+                eprintln!("{} Download failed: HTTP {}", red("Error:"), r.status());
+                process::exit(1);
+            }
+            match r.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("{} Download failed: {e}", red("Error:"));
+                    process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{} Download failed: {e}", red("Error:"));
+            process::exit(1);
+        }
+    };
+
+    // Verify checksum if available
+    if let Ok(resp) = client()
+        .get(&checksums_url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            if let Ok(checksums_text) = resp.text().await {
+                verify_checksum(&archive_bytes, &archive_name, &checksums_text);
+            }
+        } else {
+            eprintln!(
+                "{}",
+                yellow("Warning: checksums.txt not found, skipping verification")
+            );
+        }
+    }
+
+    // Extract archive to install dir
+    let dir = install_dir();
+    eprintln!("{}", dim(&format!("Installing to {}...", dir.display())));
+
+    let decoder = flate2::read::GzDecoder::new(&archive_bytes[..]);
+    let mut archive = tar::Archive::new(decoder);
+
+    let tmp_dir = dir.join(".upgrade-tmp");
+    if tmp_dir.exists() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+    std::fs::create_dir_all(&tmp_dir).unwrap_or_else(|e| {
+        eprintln!("{} Failed to create temp dir: {e}", red("Error:"));
+        process::exit(1);
+    });
+
+    if let Err(e) = archive.unpack(&tmp_dir) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        eprintln!("{} Failed to extract archive: {e}", red("Error:"));
+        process::exit(1);
+    }
+
+    // The archive contains a boxrun/ directory
+    let extracted = tmp_dir.join("boxrun");
+
+    // Replace binary
+    let new_binary = extracted.join("boxrun");
+    if new_binary.exists() {
+        let dest_binary = dir.join("boxrun");
+        if let Err(e) = std::fs::copy(&new_binary, &dest_binary) {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            eprintln!("{} Failed to replace binary: {e}", red("Error:"));
+            process::exit(1);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dest_binary, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    // Replace runtime directory
+    let new_runtime = extracted.join("runtime");
+    if new_runtime.is_dir() {
+        let dest_runtime = dir.join("runtime");
+        if dest_runtime.exists() {
+            let _ = std::fs::remove_dir_all(&dest_runtime);
+        }
+        if let Err(e) = copy_dir_all(&new_runtime, &dest_runtime) {
+            eprintln!("{} Failed to update runtime: {e}", red("Error:"));
+        }
+    }
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    println!("{}", green(&format!("Upgraded to {tag}")));
+}
+
+fn verify_checksum(data: &[u8], filename: &str, checksums_text: &str) {
+    use std::io::Write as _;
+
+    // Find the line for our file in checksums.txt
+    let expected = checksums_text
+        .lines()
+        .find(|line| line.ends_with(filename))
+        .and_then(|line| line.split_whitespace().next());
+
+    let expected = match expected {
+        Some(h) => h,
+        None => {
+            eprintln!(
+                "{}",
+                yellow(&format!(
+                    "Warning: no checksum found for {filename}, skipping verification"
+                ))
+            );
+            return;
+        }
+    };
+
+    // Compute SHA-256 using the shasum command
+    let mut child = match process::Command::new("shasum")
+        .args(["-a", "256"])
+        .stdin(process::Stdio::piped())
+        .stdout(process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!(
+                "{}",
+                yellow("Warning: shasum not available, skipping checksum verification")
+            );
+            return;
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(data);
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let actual_hash = actual.split_whitespace().next().unwrap_or("");
+
+    if actual_hash != expected {
+        eprintln!("{} Checksum verification failed!", red("Error:"));
+        eprintln!("  Expected: {expected}");
+        eprintln!("  Got:      {actual_hash}");
+        process::exit(1);
+    }
+
+    eprintln!("{}", dim("Checksum verified."));
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+// ── uninstall ────────────────────────────────────────────────────────────
+
+pub async fn uninstall() {
+    let dir = install_dir();
+
+    println!("This will remove:");
+    println!("  {}", dir.display());
+
+    // Check for symlink in common bin dirs
+    let symlink_paths = ["/usr/local/bin/boxrun", "/opt/homebrew/bin/boxrun"];
+    let mut found_symlink: Option<PathBuf> = None;
+    for path in &symlink_paths {
+        let p = Path::new(path);
+        if p.exists() || p.symlink_metadata().is_ok() {
+            // Check if it's a symlink pointing into our install dir
+            if let Ok(target) = std::fs::read_link(p) {
+                if target.starts_with(&dir) {
+                    found_symlink = Some(p.to_path_buf());
+                    println!("  {path} -> {}", target.display());
+                }
+            }
+        }
+    }
+
+    // Confirm
+    eprint!("\nContinue? [y/N] ");
+    io::stderr().flush().ok();
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).ok();
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        println!("Aborted.");
+        return;
+    }
+
+    // Remove symlink
+    if let Some(link) = &found_symlink {
+        if let Err(e) = std::fs::remove_file(link) {
+            eprintln!(
+                "{} Failed to remove symlink {}: {e}",
+                yellow("Warning:"),
+                link.display()
+            );
+            eprintln!("{}", dim(&format!("  Try: sudo rm {}", link.display())));
+        } else {
+            println!("Removed {}", link.display());
+        }
+    }
+
+    // Remove install directory
+    if dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            eprintln!("{} Failed to remove {}: {e}", red("Error:"), dir.display());
+            process::exit(1);
+        }
+        println!("Removed {}", dir.display());
+    }
+
+    println!("{}", green("boxrun has been uninstalled."));
 }

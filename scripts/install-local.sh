@@ -43,28 +43,19 @@ chmod +x "${BOXRUN_HOME}/boxrun"
 cp -f "$RUNTIME_DIR"/* "${BOXRUN_HOME}/runtime/" 2>/dev/null || true
 chmod +x "${BOXRUN_HOME}/runtime/boxlite-guest" "${BOXRUN_HOME}/runtime/boxlite-shim" 2>/dev/null || true
 
-# 4) Create wrapper script
-WRAPPER="${BIN_DIR}/boxrun"
-WRAPPER_CONTENT="#!/bin/sh
-BOXRUN_HOME=\"${BOXRUN_HOME}\"
-export BOXLITE_RUNTIME_DIR=\"\${BOXRUN_HOME}/runtime\"
-export DYLD_LIBRARY_PATH=\"\${BOXRUN_HOME}/runtime\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}\"
-exec \"\${BOXRUN_HOME}/boxrun\" \"\$@\"
-"
-
-echo "==> Creating wrapper at ${WRAPPER}..."
+# 4) Create symlink (the binary auto-detects runtime dir, no wrapper needed)
+LINK="${BIN_DIR}/boxrun"
+echo "==> Creating symlink at ${LINK}..."
 if [ -w "$BIN_DIR" ]; then
-  printf '%s' "$WRAPPER_CONTENT" > "$WRAPPER"
-  chmod +x "$WRAPPER"
+  ln -sf "${BOXRUN_HOME}/boxrun" "$LINK"
 else
-  printf '%s' "$WRAPPER_CONTENT" | sudo tee "$WRAPPER" > /dev/null
-  sudo chmod +x "$WRAPPER"
+  sudo ln -sf "${BOXRUN_HOME}/boxrun" "$LINK"
 fi
 
 echo ""
 echo "Done! Installed:"
 echo "  Binary:  ${BOXRUN_HOME}/boxrun"
 echo "  Runtime: ${BOXRUN_HOME}/runtime/"
-echo "  Wrapper: ${WRAPPER}"
+echo "  Symlink: ${LINK}"
 echo ""
-echo "Run: boxrun serve"
+echo "Run: boxrun shell ubuntu"

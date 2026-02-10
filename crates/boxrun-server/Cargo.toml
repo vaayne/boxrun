@@ -37,6 +37,8 @@ tokio-stream = { workspace = true }
 boxlite = { workspace = true }
 tokio-tungstenite = { workspace = true }
 libc = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

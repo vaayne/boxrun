@@ -1,18 +1,26 @@
 #!/bin/sh
 set -e
 
-# BoxRun installer — downloads the latest release binary for your platform.
+# BoxRun installer — downloads the latest (or pinned) release binary.
 #
 # Usage:
 #   curl -fsSL https://boxlite.ai/boxrun/install | sh
 #
+# Pin a specific version:
+#   VERSION=v0.2.0 curl -fsSL https://boxlite.ai/boxrun/install | sh
+#
 # Environment variables:
+#   VERSION           Version tag to install (default: latest)
 #   BOXRUN_HOME       Installation directory (default: ~/.boxrun)
-#   BOXRUN_BIN_DIR    Where to place the wrapper script (default: /usr/local/bin)
+#   BOXRUN_BIN_DIR    Where to place the symlink (default: /usr/local/bin)
 
 REPO="boxlite-ai/boxrun"
 BOXRUN_HOME="${BOXRUN_HOME:-$HOME/.boxrun}"
 BIN_DIR="${BOXRUN_BIN_DIR:-/usr/local/bin}"
+
+# Temp directory with guaranteed cleanup
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
 detect_os() {
   case "$(uname -s)" in
@@ -30,6 +38,16 @@ detect_arch() {
   esac
 }
 
+# Extract a JSON field value — try jq first, fall back to grep/sed.
+json_field() {
+  _field="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r ".$_field"
+  else
+    grep "\"$_field\":" | head -1 | sed -E 's/.*"([^"]+)".*/\1/'
+  fi
+}
+
 OS=$(detect_os)
 ARCH=$(detect_arch)
 
@@ -40,18 +58,43 @@ fi
 
 ARCHIVE="boxrun-${ARCH}-${OS}.tar.gz"
 
-# Get latest release tag
-LATEST=$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-if [ -z "$LATEST" ]; then
-  echo "Error: Could not determine latest release"
-  exit 1
+# Determine version
+if [ -n "$VERSION" ]; then
+  TAG="$VERSION"
+else
+  TAG=$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" | json_field tag_name)
+  if [ -z "$TAG" ]; then
+    echo "Error: Could not determine latest release"
+    exit 1
+  fi
 fi
 
-URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE}"
+URL="https://github.com/${REPO}/releases/download/${TAG}/${ARCHIVE}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.txt"
 
-echo "Downloading boxrun ${LATEST} for ${OS}/${ARCH}..."
-TMP=$(mktemp -d)
+echo "Downloading boxrun ${TAG} for ${OS}/${ARCH}..."
 curl -fSL "$URL" -o "${TMP}/${ARCHIVE}"
+
+# Verify checksum if checksums.txt is available
+if curl -fsSL "$CHECKSUMS_URL" -o "${TMP}/checksums.txt" 2>/dev/null; then
+  echo "Verifying checksum..."
+  # checksums.txt has lines like: <hash>  <filename>
+  EXPECTED=$(grep "$ARCHIVE" "${TMP}/checksums.txt" | awk '{print $1}')
+  if [ -n "$EXPECTED" ]; then
+    ACTUAL=$(shasum -a 256 "${TMP}/${ARCHIVE}" | awk '{print $1}')
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+      echo "Error: Checksum verification failed!"
+      echo "  Expected: $EXPECTED"
+      echo "  Got:      $ACTUAL"
+      exit 1
+    fi
+    echo "Checksum verified."
+  else
+    echo "Warning: no checksum entry for ${ARCHIVE}, skipping verification"
+  fi
+else
+  echo "Warning: checksums.txt not available, skipping verification"
+fi
 
 echo "Installing to ${BOXRUN_HOME}..."
 
@@ -70,33 +113,25 @@ if [ -d "${TMP}/boxrun/runtime" ]; then
   cp -R "${TMP}/boxrun/runtime" "${BOXRUN_HOME}/runtime"
 fi
 
-rm -rf "$TMP"
-
-# Create wrapper script in BIN_DIR
-WRAPPER="${BIN_DIR}/boxrun"
-WRAPPER_CONTENT="#!/bin/sh
-BOXRUN_HOME=\"${BOXRUN_HOME}\"
-export BOXLITE_RUNTIME_DIR=\"\${BOXRUN_HOME}/runtime\"
-export DYLD_LIBRARY_PATH=\"\${BOXRUN_HOME}/runtime\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}\"
-exec \"\${BOXRUN_HOME}/boxrun\" \"\$@\"
-"
-
-echo "Creating wrapper at ${WRAPPER}..."
+# Create symlink in BIN_DIR (replaces wrapper script — the binary auto-detects runtime dir)
+LINK="${BIN_DIR}/boxrun"
+echo "Creating symlink at ${LINK}..."
 if [ -w "$BIN_DIR" ]; then
-  printf '%s' "$WRAPPER_CONTENT" > "$WRAPPER"
-  chmod +x "$WRAPPER"
+  ln -sf "${BOXRUN_HOME}/boxrun" "$LINK"
 else
-  printf '%s' "$WRAPPER_CONTENT" | sudo tee "$WRAPPER" > /dev/null
-  sudo chmod +x "$WRAPPER"
+  sudo ln -sf "${BOXRUN_HOME}/boxrun" "$LINK"
 fi
 
 echo ""
-echo "boxrun ${LATEST} installed successfully!"
+echo "boxrun ${TAG} installed successfully!"
 echo "  Binary:  ${BOXRUN_HOME}/boxrun"
 echo "  Runtime: ${BOXRUN_HOME}/runtime/"
-echo "  Wrapper: ${WRAPPER}"
+echo "  Symlink: ${LINK}"
 echo ""
 echo "Get started:"
-echo "  boxrun serve     # Start the server"
-echo "  boxrun create    # Create a box"
-echo "  boxrun exec      # Run a command"
+echo "  boxrun shell ubuntu     # Launch an interactive VM"
+echo "  boxrun --help           # See all commands"
+echo ""
+echo "Manage installation:"
+echo "  boxrun upgrade          # Self-update to latest version"
+echo "  boxrun uninstall        # Remove boxrun"
