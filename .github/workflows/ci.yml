@@ -10,34 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check out BoxLite
-        run: git clone --recurse-submodules --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install Go (for libgvproxy)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Install LLVM (macOS)
-        if: runner.os == 'macOS'
-        run: brew install llvm lld protobuf
-
-      - run: cargo test --workspace
-
-  clippy:
-    name: Clippy
+  check:
+    name: Test + Clippy
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,82 +32,18 @@ jobs:
       - name: Install LLVM (macOS)
         run: brew install llvm lld protobuf
 
+      - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings
-
-  compat:
-    name: Python SDK Compatibility
-    runs-on: macos-latest
-    needs: [test]
-    # Requires Apple Hypervisor Framework (real VMs). GitHub-hosted runners
-    # lack HVF support, so this job is allowed to fail in CI.
-    # Run manually on a machine with HVF: python tests/compat_test.py
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check out BoxLite
-        run: git clone --recurse-submodules --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install Go (for libgvproxy)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Install LLVM (macOS)
-        run: brew install llvm lld protobuf
-
-      - name: Build Rust server
-        run: cargo build
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Python SDK
-        run: pip install boxrun
-
-      - name: Start Rust server
-        run: |
-          # Locate pip-installed boxlite runtime (has boxlite-guest, boxlite-shim, libs)
-          BOXLITE_RUNTIME=$(python -c "import boxlite, os; print(os.path.join(os.path.dirname(boxlite.__file__), 'runtime'))")
-          echo "BOXLITE_RUNTIME=$BOXLITE_RUNTIME" >> "$GITHUB_ENV"
-
-          BOXLITE_RUNTIME_DIR="$BOXLITE_RUNTIME" \
-          DYLD_LIBRARY_PATH="$BOXLITE_RUNTIME" \
-          BOXRUN_DB=/tmp/boxrun_compat.db \
-          ./target/debug/boxrun serve --port 9099 &
-
-          # Wait for server to be ready
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:9099/v1/info > /dev/null 2>&1; then
-              echo "Server ready"
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Run compatibility test
-        run: python tests/compat_test.py
-
-      - name: Stop server
-        if: always()
-        run: |
-          kill $(lsof -ti :9099) 2>/dev/null || true
 
   fmt:
     name: Format
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check out BoxLite
-        run: git clone --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
-      - run: cargo fmt --all -- --check
+      - name: Check formatting
+        run: find crates -name '*.rs' | xargs rustfmt --check --edition 2021
