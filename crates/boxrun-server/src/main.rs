@@ -243,12 +243,7 @@ async fn main() {
             cli::images();
         }
         Commands::Completion { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "boxrun",
-                &mut std::io::stdout(),
-            );
+            clap_complete::generate(shell, &mut Cli::command(), "boxrun", &mut std::io::stdout());
         }
     }
 }

@@ -85,10 +85,7 @@ fn check_response(status: u16, body: &str) -> Value {
                     );
                 }
                 "BOX_ALREADY_RUNNING" => {
-                    eprintln!(
-                        "{}",
-                        dim("  Hint: Stop it first with: boxrun stop <box>")
-                    );
+                    eprintln!("{}", dim("  Hint: Stop it first with: boxrun stop <box>"));
                 }
                 "NAME_ALREADY_EXISTS" => {
                     eprintln!(
@@ -97,10 +94,7 @@ fn check_response(status: u16, body: &str) -> Value {
                     );
                 }
                 "BOX_NOT_FOUND" => {
-                    eprintln!(
-                        "{}",
-                        dim("  Hint: List available boxes with: boxrun ls")
-                    );
+                    eprintln!("{}", dim("  Hint: List available boxes with: boxrun ls"));
                 }
                 _ => {}
             }
@@ -168,14 +162,8 @@ async fn ensure_server() -> bool {
 }
 
 fn handle_connection_error(_e: &reqwest::Error) {
-    eprintln!(
-        "{} Cannot connect to BoxRun server.",
-        red("Error:")
-    );
-    eprintln!(
-        "{}",
-        dim("  Start it with: boxrun serve")
-    );
+    eprintln!("{} Cannot connect to BoxRun server.", red("Error:"));
+    eprintln!("{}", dim("  Start it with: boxrun serve"));
     process::exit(1);
 }
 
@@ -456,10 +444,7 @@ async fn create_and_get_id(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let display_name = box_data
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&id);
+            let display_name = box_data.get("name").and_then(|v| v.as_str()).unwrap_or(&id);
             eprintln!("Created box {}", bold(display_name));
             id
         }
@@ -774,10 +759,7 @@ async fn attach_inner(box_id: &str, shell: &str) {
             let err_msg = e.to_string();
             if err_msg.contains("404") || err_msg.contains("Not Found") {
                 eprintln!("{} Box '{}' not found.", red("Error:"), box_id);
-                eprintln!(
-                    "{}",
-                    dim("  Hint: List available boxes with: boxrun ls")
-                );
+                eprintln!("{}", dim("  Hint: List available boxes with: boxrun ls"));
             } else if err_msg.contains("409") || err_msg.contains("not running") {
                 eprintln!("{} Box '{}' is not running.", red("Error:"), box_id);
                 eprintln!(

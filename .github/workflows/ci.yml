@@ -16,9 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out BoxLite
-        run: git clone --recurse-submodules --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -46,4 +43,4 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: find crates -name '*.rs' | xargs rustfmt --check --edition 2021
+        run: cargo fmt --all -- --check
