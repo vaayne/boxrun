@@ -185,6 +185,15 @@ impl RunRequest {
         if self.cmd.is_empty() {
             return Err("cmd must be a non-empty list".into());
         }
+        if self.cpu <= 0 {
+            return Err("cpu must be greater than 0".into());
+        }
+        if self.memory_mb <= 0 {
+            return Err("memory_mb must be greater than 0".into());
+        }
+        if self.disk_size_gb <= 0 {
+            return Err("disk_size_gb must be greater than 0".into());
+        }
         if let Some(t) = self.timeout_ms {
             if t <= 0 {
                 return Err("timeout_ms must be positive".into());

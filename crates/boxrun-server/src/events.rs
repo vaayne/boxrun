@@ -38,9 +38,9 @@ impl EventBus {
 
     /// Signal all subscribers that streaming is done for the given exec_id.
     pub async fn finish(&self, exec_id: &str) {
-        let subs = self.subscribers.lock().await;
-        if let Some(senders) = subs.get(exec_id) {
-            for sender in senders {
+        let mut subs = self.subscribers.lock().await;
+        if let Some(senders) = subs.remove(exec_id) {
+            for sender in &senders {
                 let _ = sender.send(None).await;
             }
         }

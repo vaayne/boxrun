@@ -506,6 +506,19 @@ pub async fn attach(box_id: &str, shell: &str) {
 
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
+    // RAII guard that restores terminal on drop (including panics)
+    struct TerminalGuard {
+        fd: i32,
+        original: libc::termios,
+    }
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
+            }
+        }
+    }
+
     // Save terminal state and enter raw mode
     let stdin_fd = 0; // STDIN_FILENO
     let old_termios = unsafe {
@@ -517,7 +530,11 @@ pub async fn attach(box_id: &str, shell: &str) {
         t
     };
 
-    // Set raw mode
+    // Set raw mode — the guard ensures restore on any exit path (including panic)
+    let _terminal_guard = TerminalGuard {
+        fd: stdin_fd,
+        original: old_termios,
+    };
     unsafe {
         let mut raw = old_termios;
         libc::cfmakeraw(&mut raw);
@@ -614,10 +631,7 @@ pub async fn attach(box_id: &str, shell: &str) {
         }
     }
 
-    // Restore terminal
-    unsafe {
-        libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &old_termios);
-    }
+    // Terminal is restored automatically by _terminal_guard Drop
 
     // Clean up
     stdin_task.abort();
@@ -642,8 +656,19 @@ fn terminal_size() -> (u16, u16) {
 
 // ── cp ───────────────────────────────────────────────────────────────────
 
+/// Check if a string looks like BOX:PATH (not an absolute or relative local path with a colon).
+/// BOX:PATH has the form "name:/path" where name does not start with '/' or '.'.
+fn is_remote_path(s: &str) -> bool {
+    if let Some((before_colon, _)) = s.split_once(':') {
+        // If the part before colon starts with '/' or '.', it's a local path
+        !before_colon.starts_with('/') && !before_colon.starts_with('.')
+    } else {
+        false
+    }
+}
+
 pub async fn cp(src: &str, dst: &str) {
-    if src.contains(':') && !Path::new(src).exists() {
+    if is_remote_path(src) {
         // Download: BOX:PATH -> LOCAL
         let (box_part, remote_path) = src.split_once(':').unwrap();
         let url = format!("{}/v1/boxes/{box_part}/files/download", base_url());
@@ -675,7 +700,7 @@ pub async fn cp(src: &str, dst: &str) {
             }
             Err(e) => handle_connection_error(&e),
         }
-    } else if dst.contains(':') && !Path::new(dst).exists() {
+    } else if is_remote_path(dst) {
         // Upload: LOCAL -> BOX:PATH
         let (box_part, remote_path) = dst.split_once(':').unwrap();
         let src_path = Path::new(src);

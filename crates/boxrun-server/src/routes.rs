@@ -714,9 +714,14 @@ async fn handle_attach(
     loop {
         tokio::select! {
             // exec stdout → websocket
-            Some(data) = out_rx.recv() => {
-                if socket.send(Message::Binary(data.into())).await.is_err() {
-                    break;
+            result = out_rx.recv() => {
+                match result {
+                    Some(data) => {
+                        if socket.send(Message::Binary(data.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break, // Process exited, stdout stream ended
                 }
             }
             // websocket → exec stdin (+ control messages)
@@ -743,12 +748,18 @@ async fn handle_attach(
         }
     }
 
-    // Clean up: kill execution, close socket
+    // Clean up: kill execution, get real exit code, close socket
     let _ = execution.kill().await;
     stdout_task.abort();
+    let exit_code = match execution.wait().await {
+        Ok(result) => result.exit_code,
+        Err(_) => 0,
+    };
     let _ = socket
         .send(Message::Text(
-            json!({"type": "exit", "code": 0}).to_string().into(),
+            json!({"type": "exit", "code": exit_code})
+                .to_string()
+                .into(),
         ))
         .await;
     let _ = socket.close().await;

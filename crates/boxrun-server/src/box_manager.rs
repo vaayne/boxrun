@@ -150,26 +150,6 @@ impl BoxManager {
         env: &Option<HashMap<String, String>>,
         volumes: &Option<Vec<serde_json::Value>>,
     ) -> Result<BoxRow, BoxRunError> {
-        // Check resource limits
-        {
-            let res = self.resources.lock().await;
-            if res.total_cpu + cpu > *MAX_TOTAL_CPU {
-                return Err(BoxRunError::new(
-                    ErrorCode::ResourceExceeded,
-                    format!("Total CPU limit ({}) would be exceeded", *MAX_TOTAL_CPU),
-                ));
-            }
-            if res.total_memory_mb + memory_mb > *MAX_TOTAL_MEMORY_MB {
-                return Err(BoxRunError::new(
-                    ErrorCode::ResourceExceeded,
-                    format!(
-                        "Total memory limit ({}MB) would be exceeded",
-                        *MAX_TOTAL_MEMORY_MB
-                    ),
-                ));
-            }
-        }
-
         // Check for duplicate name
         if let Some(n) = name {
             if let Ok(Some(_)) = self.store.get_box(n).await {
@@ -233,10 +213,8 @@ impl BoxManager {
                     .filter_map(|v| {
                         let host_path = v.get("host_path")?.as_str()?.to_string();
                         let guest_path = v.get("guest_path")?.as_str()?.to_string();
-                        let read_only = v
-                            .get("read_only")
-                            .and_then(|r| r.as_bool())
-                            .unwrap_or(false);
+                        let read_only =
+                            v.get("readonly").and_then(|r| r.as_bool()).unwrap_or(false);
                         Some(VolumeSpec {
                             host_path,
                             guest_path,
@@ -269,33 +247,62 @@ impl BoxManager {
             ..Default::default()
         };
 
-        // Create and start the BoxLite VM
-        let litebox = self
-            .runtime
-            .create(bl_options, Some(box_id.clone()))
-            .await
-            .map_err(|e| {
-                BoxRunError::new(
-                    ErrorCode::RuntimeError,
-                    format!("Failed to create BoxLite VM: {e}"),
-                )
-            })?;
-
-        let boxlite_id = litebox.id().as_str().to_string();
-
-        litebox.start().await.map_err(|e| {
-            BoxRunError::new(
-                ErrorCode::RuntimeError,
-                format!("Failed to start BoxLite VM: {e}"),
-            )
-        })?;
-
-        // Update resource tracking
+        // Reserve resources atomically (check + reserve in same lock)
+        // Prevents TOCTOU race where concurrent creates both pass the check
         {
             let mut res = self.resources.lock().await;
+            if res.total_cpu + cpu > *MAX_TOTAL_CPU {
+                return Err(BoxRunError::new(
+                    ErrorCode::ResourceExceeded,
+                    format!("Total CPU limit ({}) would be exceeded", *MAX_TOTAL_CPU),
+                ));
+            }
+            if res.total_memory_mb + memory_mb > *MAX_TOTAL_MEMORY_MB {
+                return Err(BoxRunError::new(
+                    ErrorCode::ResourceExceeded,
+                    format!(
+                        "Total memory limit ({}MB) would be exceeded",
+                        *MAX_TOTAL_MEMORY_MB
+                    ),
+                ));
+            }
             res.total_cpu += cpu;
             res.total_memory_mb += memory_mb;
             res.box_count += 1;
+        }
+
+        // Create the BoxLite VM
+        let litebox = match self.runtime.create(bl_options, Some(box_id.clone())).await {
+            Ok(lb) => lb,
+            Err(e) => {
+                // Release reserved resources
+                let mut res = self.resources.lock().await;
+                res.total_cpu -= cpu;
+                res.total_memory_mb -= memory_mb;
+                res.box_count -= 1;
+                return Err(BoxRunError::new(
+                    ErrorCode::RuntimeError,
+                    format!("Failed to create BoxLite VM: {e}"),
+                ));
+            }
+        };
+
+        let boxlite_id = litebox.id().as_str().to_string();
+
+        // Start the BoxLite VM
+        if let Err(e) = litebox.start().await {
+            // Release reserved resources and clean up created VM
+            {
+                let mut res = self.resources.lock().await;
+                res.total_cpu -= cpu;
+                res.total_memory_mb -= memory_mb;
+                res.box_count -= 1;
+            }
+            let _ = self.runtime.remove(&boxlite_id, true).await;
+            return Err(BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to start BoxLite VM: {e}"),
+            ));
         }
 
         let box_data = self
@@ -392,9 +399,12 @@ impl BoxManager {
             ));
         }
 
-        // Check resource limits
+        // Get BoxLite handle first (cheap, before resource reservation)
+        let litebox = self.get_litebox(&box_data).await?;
+
+        // Reserve resources atomically (check + reserve in same lock)
         {
-            let res = self.resources.lock().await;
+            let mut res = self.resources.lock().await;
             if res.total_cpu + box_data.cpu > *MAX_TOTAL_CPU {
                 return Err(BoxRunError::new(
                     ErrorCode::ResourceExceeded,
@@ -407,22 +417,22 @@ impl BoxManager {
                     "Total memory limit would be exceeded",
                 ));
             }
-        }
-
-        // Start via BoxLite
-        let litebox = self.get_litebox(&box_data).await?;
-        litebox.start().await.map_err(|e| {
-            BoxRunError::new(
-                ErrorCode::RuntimeError,
-                format!("Failed to start BoxLite VM: {e}"),
-            )
-        })?;
-
-        {
-            let mut res = self.resources.lock().await;
             res.total_cpu += box_data.cpu;
             res.total_memory_mb += box_data.memory_mb;
             res.box_count += 1;
+        }
+
+        // Start via BoxLite
+        if let Err(e) = litebox.start().await {
+            // Release reserved resources
+            let mut res = self.resources.lock().await;
+            res.total_cpu -= box_data.cpu;
+            res.total_memory_mb -= box_data.memory_mb;
+            res.box_count -= 1;
+            return Err(BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to start BoxLite VM: {e}"),
+            ));
         }
 
         self.store
@@ -441,27 +451,26 @@ impl BoxManager {
     pub async fn remove_box(&self, id_or_name: &str, force: bool) -> Result<(), BoxRunError> {
         let box_data = self.get_box(id_or_name).await?;
 
-        if box_data.status == "running" {
-            if !force {
-                return Err(BoxRunError::new(
-                    ErrorCode::BoxAlreadyRunning,
-                    "Box is running. Use force=true to remove.",
-                ));
-            }
-            // Force stop — release resources
-            {
-                let mut res = self.resources.lock().await;
-                res.total_cpu -= box_data.cpu;
-                res.total_memory_mb -= box_data.memory_mb;
-                res.box_count -= 1;
-            }
+        if box_data.status == "running" && !force {
+            return Err(BoxRunError::new(
+                ErrorCode::BoxAlreadyRunning,
+                "Box is running. Use force=true to remove.",
+            ));
         }
 
-        // Remove from BoxLite
+        // Remove from BoxLite first, then release resources
         if let Some(ref boxlite_id) = box_data.boxlite_id {
             if let Err(e) = self.runtime.remove(boxlite_id, force).await {
                 tracing::warn!("Failed to remove BoxLite VM {}: {}", boxlite_id, e);
             }
+        }
+
+        // Release resources only for running boxes (stopped boxes already released)
+        if box_data.status == "running" {
+            let mut res = self.resources.lock().await;
+            res.total_cpu -= box_data.cpu;
+            res.total_memory_mb -= box_data.memory_mb;
+            res.box_count -= 1;
         }
 
         self.store
@@ -552,12 +561,12 @@ impl BoxManager {
                             let s = seq.fetch_add(1, Ordering::SeqCst);
                             let event = Event {
                                 seq: s,
-                                event_type: "stdout".into(),
+                                event_type: "log".into(),
                                 data: chunk.clone(),
                                 stream: Some("stdout".into()),
                             };
                             let _ = store
-                                .append_event(&exec_id, s, "stdout", &chunk, Some("stdout"))
+                                .append_event(&exec_id, s, "log", &chunk, Some("stdout"))
                                 .await;
                             event_bus.publish(&exec_id, event).await;
                         }
@@ -577,12 +586,12 @@ impl BoxManager {
                             let s = seq.fetch_add(1, Ordering::SeqCst);
                             let event = Event {
                                 seq: s,
-                                event_type: "stderr".into(),
+                                event_type: "log".into(),
                                 data: chunk.clone(),
                                 stream: Some("stderr".into()),
                             };
                             let _ = store
-                                .append_event(&exec_id, s, "stderr", &chunk, Some("stderr"))
+                                .append_event(&exec_id, s, "log", &chunk, Some("stderr"))
                                 .await;
                             event_bus.publish(&exec_id, event).await;
                         }
