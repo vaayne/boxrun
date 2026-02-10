@@ -6,7 +6,8 @@ mod routes;
 mod store;
 mod ui;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(
@@ -103,6 +104,30 @@ enum Commands {
         #[arg(long, default_value = "/bin/bash")]
         shell: String,
     },
+    /// Create a box and attach an interactive terminal
+    Shell {
+        /// Container image or alias (e.g. ubuntu, python, node)
+        #[arg(default_value = "default")]
+        image: String,
+        /// Box name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// CPU cores
+        #[arg(long, default_value_t = 2)]
+        cpu: i64,
+        /// Memory in MB
+        #[arg(short, long, default_value_t = 1024)]
+        memory: i64,
+        /// Disk size in GB
+        #[arg(short, long, default_value_t = 8)]
+        disk: i64,
+        /// Shell to use
+        #[arg(long, default_value = "/bin/bash")]
+        shell: String,
+        /// Volume mount /host:/guest[:ro]
+        #[arg(short, long)]
+        volume: Vec<String>,
+    },
     /// Copy files between host and box
     Cp {
         /// Source (LOCAL or BOX:PATH)
@@ -132,6 +157,12 @@ enum Commands {
     },
     /// List recommended images and aliases
     Images,
+    /// Generate shell completions
+    Completion {
+        /// Shell type
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[tokio::main]
@@ -183,6 +214,17 @@ async fn main() {
         Commands::Attach { box_id, shell } => {
             cli::attach(&box_id, &shell).await;
         }
+        Commands::Shell {
+            image,
+            name,
+            cpu,
+            memory,
+            disk,
+            shell,
+            volume,
+        } => {
+            cli::shell(&image, name.as_deref(), cpu, memory, disk, &shell, &volume).await;
+        }
         Commands::Cp { src, dst } => {
             cli::cp(&src, &dst).await;
         }
@@ -199,6 +241,14 @@ async fn main() {
         }
         Commands::Images => {
             cli::images();
+        }
+        Commands::Completion { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "boxrun",
+                &mut std::io::stdout(),
+            );
         }
     }
 }

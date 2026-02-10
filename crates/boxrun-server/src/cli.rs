@@ -5,7 +5,52 @@ use std::process;
 use boxrun_types::config::{resolve_image, socket_path, IMAGE_CATALOG};
 use serde_json::{json, Value};
 
-/// Create an HTTP client that connects via Unix socket or TCP.
+/// ANSI color helpers (only when stderr/stdout is a terminal).
+fn is_tty() -> bool {
+    unsafe { libc::isatty(1) != 0 }
+}
+
+fn green(s: &str) -> String {
+    if is_tty() {
+        format!("\x1b[32m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn red(s: &str) -> String {
+    if is_tty() {
+        format!("\x1b[31m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn yellow(s: &str) -> String {
+    if is_tty() {
+        format!("\x1b[33m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn dim(s: &str) -> String {
+    if is_tty() {
+        format!("\x1b[2m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn bold(s: &str) -> String {
+    if is_tty() {
+        format!("\x1b[1m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Create an HTTP client.
 fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
@@ -15,7 +60,6 @@ fn base_url() -> String {
     let sock = socket_path();
     if Path::new(&sock).exists() {
         // reqwest doesn't natively support Unix sockets, so we'll use TCP
-        // In production, use hyper-util with Unix socket connector
     }
     let host = std::env::var("BOXRUN_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port = std::env::var("BOXRUN_PORT").unwrap_or_else(|_| "9090".into());
@@ -30,19 +74,137 @@ fn check_response(status: u16, body: &str) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("UNKNOWN");
             let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or(body);
-            eprintln!("Error: [{code}] {msg}");
+
+            // Friendly hints based on error code
+            eprintln!("{} [{code}] {msg}", red("Error:"));
+            match code {
+                "BOX_NOT_RUNNING" => {
+                    eprintln!(
+                        "{}",
+                        dim("  Hint: Start the box first with: boxrun start <box>")
+                    );
+                }
+                "BOX_ALREADY_RUNNING" => {
+                    eprintln!(
+                        "{}",
+                        dim("  Hint: Stop it first with: boxrun stop <box>")
+                    );
+                }
+                "NAME_ALREADY_EXISTS" => {
+                    eprintln!(
+                        "{}",
+                        dim("  Hint: Use a different name, or remove the existing box: boxrun rm <name> --force")
+                    );
+                }
+                "BOX_NOT_FOUND" => {
+                    eprintln!(
+                        "{}",
+                        dim("  Hint: List available boxes with: boxrun ls")
+                    );
+                }
+                _ => {}
+            }
         } else {
-            eprintln!("Error: {status} {body}");
+            eprintln!("{} {status} {body}", red("Error:"));
         }
         process::exit(1);
     }
     serde_json::from_str(body).unwrap_or(json!({}))
 }
 
+/// Try to auto-start the server in the background if it's not running.
+/// Returns true if server became available.
+async fn ensure_server() -> bool {
+    // Quick check if server is already running
+    let url = format!("{}/v1/info", base_url());
+    if client()
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .is_ok()
+    {
+        return true;
+    }
+
+    // Server not running — try to start it
+    eprintln!(
+        "{}",
+        dim("Server not running. Starting boxrun serve in background...")
+    );
+
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+
+    // Spawn server process in background
+    let child = std::process::Command::new(&exe)
+        .arg("serve")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn();
+
+    if child.is_err() {
+        return false;
+    }
+
+    // Wait for server to become ready (up to 30s)
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if client()
+            .get(&url)
+            .timeout(std::time::Duration::from_millis(500))
+            .send()
+            .await
+            .is_ok()
+        {
+            eprintln!("{}", dim("Server started."));
+            return true;
+        }
+    }
+    false
+}
+
 fn handle_connection_error(_e: &reqwest::Error) {
-    eprintln!("Error: Cannot connect to BoxRun server. Is it running?");
-    eprintln!("Start it with: boxrun serve");
+    eprintln!(
+        "{} Cannot connect to BoxRun server.",
+        red("Error:")
+    );
+    eprintln!(
+        "{}",
+        dim("  Start it with: boxrun serve")
+    );
     process::exit(1);
+}
+
+/// Wrapper: ensure server is running, then execute the async operation.
+/// If connection fails, auto-start server and retry once.
+async fn with_server<F, Fut>(f: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // Try to connect first; if it fails, auto-start
+    let url = format!("{}/v1/info", base_url());
+    if client()
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .is_err()
+    {
+        if !ensure_server().await {
+            eprintln!("{} Could not start BoxRun server.", red("Error:"));
+            eprintln!(
+                "{}",
+                dim("  Try starting manually: boxrun serve")
+            );
+            process::exit(1);
+        }
+    }
+    f().await;
 }
 
 fn parse_volume(value: &str) -> Result<Value, String> {
@@ -102,7 +264,6 @@ pub async fn serve(host: &str, port: u16, socket: Option<&str>) {
     };
 
     if let Some(sock_path) = socket {
-        // Unix socket mode
         if Path::new(sock_path).exists() {
             let _ = std::fs::remove_file(sock_path);
         }
@@ -128,7 +289,6 @@ pub async fn serve(host: &str, port: u16, socket: Option<&str>) {
             process::exit(1);
         });
     } else {
-        // TCP mode — clean up stale socket
         let stale_sock = socket_path();
         if Path::new(&stale_sock).exists() {
             let _ = std::fs::remove_file(&stale_sock);
@@ -170,6 +330,21 @@ pub async fn create(
     network: bool,
     volume: &[String],
 ) {
+    with_server(|| async {
+        create_inner(image, name, cpu, memory, disk, network, volume).await;
+    })
+    .await;
+}
+
+async fn create_inner(
+    image: &str,
+    name: Option<&str>,
+    cpu: i64,
+    memory: i64,
+    disk: i64,
+    network: bool,
+    volume: &[String],
+) {
     let image = resolve_image(image);
     let volumes: Option<Vec<Value>> = if volume.is_empty() {
         None
@@ -180,7 +355,7 @@ pub async fn create(
                 .map(|v| match parse_volume(v) {
                     Ok(val) => val,
                     Err(e) => {
-                        eprintln!("Error: {e}");
+                        eprintln!("{} {e}", red("Error:"));
                         process::exit(1);
                     }
                 })
@@ -228,9 +403,87 @@ pub async fn create(
     }
 }
 
+/// Create a box and return its ID (for use by shell command).
+async fn create_and_get_id(
+    image: &str,
+    name: Option<&str>,
+    cpu: i64,
+    memory: i64,
+    disk: i64,
+    volume: &[String],
+) -> String {
+    let image = resolve_image(image);
+    let volumes: Option<Vec<Value>> = if volume.is_empty() {
+        None
+    } else {
+        Some(
+            volume
+                .iter()
+                .map(|v| match parse_volume(v) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        eprintln!("{} {e}", red("Error:"));
+                        process::exit(1);
+                    }
+                })
+                .collect(),
+        )
+    };
+
+    let mut body = json!({
+        "image": image,
+        "name": name,
+        "cpu": cpu,
+        "memory_mb": memory,
+        "disk_size_gb": disk,
+    });
+    if let Some(vols) = volumes {
+        body.as_object_mut()
+            .unwrap()
+            .insert("volumes".into(), json!(vols));
+    }
+
+    let url = format!("{}/v1/boxes", base_url());
+    match client()
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            let box_data = check_response(status, &text);
+            let id = box_data
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let display_name = box_data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id);
+            eprintln!("Created box {}", bold(display_name));
+            id
+        }
+        Err(e) => {
+            handle_connection_error(&e);
+            unreachable!()
+        }
+    }
+}
+
 // ── ls ───────────────────────────────────────────────────────────────────
 
 pub async fn ls(status: Option<&str>) {
+    with_server(|| async {
+        ls_inner(status).await;
+    })
+    .await;
+}
+
+async fn ls_inner(status: Option<&str>) {
     let mut url = format!("{}/v1/boxes", base_url());
     if let Some(s) = status {
         url.push_str(&format!("?status={s}"));
@@ -260,12 +513,14 @@ pub async fn ls(status: Option<&str>) {
                 return;
             }
 
+            // Table header
             let header = format!(
                 "{:<20} {:<15} {:<12} {:<25} {:>4} {:>8} {:>6} {:<20}",
                 "ID", "NAME", "STATUS", "IMAGE", "CPU", "MEM", "DISK", "CREATED"
             );
-            println!("{header}");
-            println!("{}", "-".repeat(header.len()));
+            println!("{}", bold(&header));
+            println!("{}", dim(&"-".repeat(header.len())));
+
             for b in boxes {
                 let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -280,9 +535,17 @@ pub async fn ls(status: Option<&str>) {
                 } else {
                     created
                 };
+
+                let status_colored = match status {
+                    "running" => green(status),
+                    "stopped" => red(status),
+                    "creating" => yellow(status),
+                    _ => status.to_string(),
+                };
+
                 println!(
-                    "{:<20} {:<15} {:<12} {:<25} {:>4} {:>7}MB {:>5}G {:<20}",
-                    id, name, status, image, cpu, mem, disk, created_short
+                    "{:<20} {:<15} {:<22} {:<25} {:>4} {:>7}MB {:>5}G {:<20}",
+                    id, name, status_colored, image, cpu, mem, disk, created_short
                 );
             }
         }
@@ -293,105 +556,116 @@ pub async fn ls(status: Option<&str>) {
 // ── stop ─────────────────────────────────────────────────────────────────
 
 pub async fn stop(box_id: &str) {
-    let url = format!("{}/v1/boxes/{box_id}:stop", base_url());
-    match client()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            let data = check_response(status, &text);
-            if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
-                println!("Stopped {id}");
+    with_server(|| async {
+        let url = format!("{}/v1/boxes/{box_id}:stop", base_url());
+        match client()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                let data = check_response(status, &text);
+                if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
+                    println!("Stopped {id}");
+                }
             }
+            Err(e) => handle_connection_error(&e),
         }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 // ── start ────────────────────────────────────────────────────────────────
 
 pub async fn start(box_id: &str) {
-    let url = format!("{}/v1/boxes/{box_id}:start", base_url());
-    match client()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            let data = check_response(status, &text);
-            if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
-                println!("Started {id}");
+    with_server(|| async {
+        let url = format!("{}/v1/boxes/{box_id}:start", base_url());
+        match client()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(60))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                let data = check_response(status, &text);
+                if let Some(id) = data.get("id").and_then(|v| v.as_str()) {
+                    println!("Started {id}");
+                }
             }
+            Err(e) => handle_connection_error(&e),
         }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 // ── rm ───────────────────────────────────────────────────────────────────
 
 pub async fn rm(box_id: &str, force: bool) {
-    let url = format!("{}/v1/boxes/{box_id}?force={}", base_url(), force);
-    match client()
-        .delete(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            check_response(status, &text);
-            println!("Removed {box_id}");
+    with_server(|| async {
+        let url = format!("{}/v1/boxes/{box_id}?force={}", base_url(), force);
+        match client()
+            .delete(&url)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                check_response(status, &text);
+                println!("Removed {box_id}");
+            }
+            Err(e) => handle_connection_error(&e),
         }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 // ── exec ─────────────────────────────────────────────────────────────────
 
 pub async fn exec_cmd(box_id: &str, cmd: &[String], detach: bool, timeout: Option<i64>) {
-    let timeout_ms = timeout.map(|t| t * 1000);
-    let url = format!("{}/v1/boxes/{box_id}/exec", base_url());
-    let body = json!({
-        "cmd": cmd,
-        "timeout_ms": timeout_ms,
-    });
+    with_server(|| async {
+        let timeout_ms = timeout.map(|t| t * 1000);
+        let url = format!("{}/v1/boxes/{box_id}/exec", base_url());
+        let body = json!({
+            "cmd": cmd,
+            "timeout_ms": timeout_ms,
+        });
 
-    match client()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            let exec_data = check_response(status, &text);
+        match client()
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                let exec_data = check_response(status, &text);
 
-            let exec_id = exec_data.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let exec_box_id = exec_data
-                .get("box_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or(box_id);
+                let exec_id = exec_data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let exec_box_id = exec_data
+                    .get("box_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(box_id);
 
-            if detach {
-                println!("{exec_id}");
-                return;
+                if detach {
+                    println!("{exec_id}");
+                    return;
+                }
+
+                stream_exec_events(exec_box_id, exec_id).await;
             }
-
-            // Stream SSE events
-            stream_exec_events(exec_box_id, exec_id).await;
+            Err(e) => handle_connection_error(&e),
         }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 async fn stream_exec_events(box_id: &str, exec_id: &str) {
@@ -472,41 +746,63 @@ async fn stream_exec_events(box_id: &str, exec_id: &str) {
         }
     }
 
-    // If we reach here, the stream ended without an exit event
-    eprintln!("Error: Connection to server lost");
+    eprintln!("{} Connection to server lost", red("Error:"));
     process::exit(1);
 }
 
 // ── attach ───────────────────────────────────────────────────────────────
 
 pub async fn attach(box_id: &str, shell: &str) {
+    with_server(|| async {
+        attach_inner(box_id, shell).await;
+    })
+    .await;
+}
+
+async fn attach_inner(box_id: &str, shell: &str) {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite;
 
-    // Get terminal size
     let (cols, rows) = terminal_size();
     let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into());
 
-    // Build WebSocket URL
     let host = std::env::var("BOXRUN_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port = std::env::var("BOXRUN_PORT").unwrap_or_else(|_| "9090".into());
     let url = format!(
         "ws://{host}:{port}/v1/boxes/{box_id}/attach?shell={shell}&cols={cols}&rows={rows}&term={term}"
     );
 
-    // Connect WebSocket BEFORE entering raw mode
     let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
         Ok(conn) => conn,
         Err(e) => {
-            eprintln!("Error: Cannot connect to BoxRun server: {e}");
-            eprintln!("Is the server running? Start with: boxrun serve");
+            let err_msg = e.to_string();
+            if err_msg.contains("404") || err_msg.contains("Not Found") {
+                eprintln!("{} Box '{}' not found.", red("Error:"), box_id);
+                eprintln!(
+                    "{}",
+                    dim("  Hint: List available boxes with: boxrun ls")
+                );
+            } else if err_msg.contains("409") || err_msg.contains("not running") {
+                eprintln!("{} Box '{}' is not running.", red("Error:"), box_id);
+                eprintln!(
+                    "{}",
+                    dim(&format!(
+                        "  Hint: Start it first with: boxrun start {box_id}"
+                    ))
+                );
+            } else {
+                eprintln!("{} Cannot attach to box: {e}", red("Error:"));
+                eprintln!(
+                    "{}",
+                    dim("  Hint: Is the server running? Try: boxrun serve")
+                );
+            }
             process::exit(1);
         }
     };
 
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
-    // RAII guard that restores terminal on drop (including panics)
     struct TerminalGuard {
         fd: i32,
         original: libc::termios,
@@ -519,18 +815,16 @@ pub async fn attach(box_id: &str, shell: &str) {
         }
     }
 
-    // Save terminal state and enter raw mode
-    let stdin_fd = 0; // STDIN_FILENO
+    let stdin_fd = 0;
     let old_termios = unsafe {
         let mut t: libc::termios = std::mem::zeroed();
         if libc::tcgetattr(stdin_fd, &mut t) != 0 {
-            eprintln!("Error: Failed to get terminal attributes");
+            eprintln!("{} Failed to get terminal attributes", red("Error:"));
             process::exit(1);
         }
         t
     };
 
-    // Set raw mode — the guard ensures restore on any exit path (including panic)
     let _terminal_guard = TerminalGuard {
         fd: stdin_fd,
         original: old_termios,
@@ -541,10 +835,8 @@ pub async fn attach(box_id: &str, shell: &str) {
         libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &raw);
     }
 
-    // Channel for stdin data (read in a blocking thread)
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
 
-    // Spawn blocking stdin reader
     let stdin_task = tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 1024];
         loop {
@@ -560,16 +852,13 @@ pub async fn attach(box_id: &str, shell: &str) {
         }
     });
 
-    // Handle SIGWINCH (terminal resize)
     let mut sigwinch =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
             .expect("Failed to register SIGWINCH handler");
 
-    // Main event loop
     let mut exit_code: i32 = 0;
     loop {
         tokio::select! {
-            // stdin → WebSocket
             Some(data) = stdin_rx.recv() => {
                 let msg = tungstenite::Message::Binary(data.into());
                 if ws_sink.send(msg).await.is_err() {
@@ -577,17 +866,15 @@ pub async fn attach(box_id: &str, shell: &str) {
                     break;
                 }
             }
-            // WebSocket → stdout
             msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(tungstenite::Message::Binary(data))) => {
-                        let stdout_fd = 1; // STDOUT_FILENO
+                        let stdout_fd = 1;
                         unsafe {
                             libc::write(stdout_fd, data.as_ptr() as *const libc::c_void, data.len());
                         }
                     }
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        // Control messages from server
                         if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(&text) {
                             match ctrl.get("type").and_then(|v| v.as_str()) {
                                 Some("exit") => {
@@ -597,14 +884,13 @@ pub async fn attach(box_id: &str, shell: &str) {
                                     break;
                                 }
                                 Some("error") => {
-                                    // Restore terminal before printing error
                                     unsafe {
                                         libc::tcsetattr(stdin_fd, libc::TCSADRAIN, &old_termios);
                                     }
                                     let msg = ctrl.get("message")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("Unknown error");
-                                    eprintln!("\r\nError: {msg}");
+                                    eprintln!("\r\n{} {msg}", red("Error:"));
                                     process::exit(1);
                                 }
                                 _ => {}
@@ -617,7 +903,6 @@ pub async fn attach(box_id: &str, shell: &str) {
                     _ => {}
                 }
             }
-            // Terminal resize
             _ = sigwinch.recv() => {
                 let (new_cols, new_rows) = terminal_size();
                 let resize_msg = serde_json::json!({
@@ -631,9 +916,6 @@ pub async fn attach(box_id: &str, shell: &str) {
         }
     }
 
-    // Terminal is restored automatically by _terminal_guard Drop
-
-    // Clean up
     stdin_task.abort();
     let _ = ws_sink.close().await;
 
@@ -642,7 +924,6 @@ pub async fn attach(box_id: &str, shell: &str) {
     }
 }
 
-/// Get the current terminal size (cols, rows).
 fn terminal_size() -> (u16, u16) {
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -654,13 +935,28 @@ fn terminal_size() -> (u16, u16) {
     }
 }
 
+// ── shell (create + attach) ─────────────────────────────────────────────
+
+pub async fn shell(
+    image: &str,
+    name: Option<&str>,
+    cpu: i64,
+    memory: i64,
+    disk: i64,
+    shell_cmd: &str,
+    volume: &[String],
+) {
+    with_server(|| async {
+        let box_id = create_and_get_id(image, name, cpu, memory, disk, volume).await;
+        attach_inner(&box_id, shell_cmd).await;
+    })
+    .await;
+}
+
 // ── cp ───────────────────────────────────────────────────────────────────
 
-/// Check if a string looks like BOX:PATH (not an absolute or relative local path with a colon).
-/// BOX:PATH has the form "name:/path" where name does not start with '/' or '.'.
 fn is_remote_path(s: &str) -> bool {
     if let Some((before_colon, _)) = s.split_once(':') {
-        // If the part before colon starts with '/' or '.', it's a local path
         !before_colon.starts_with('/') && !before_colon.starts_with('.')
     } else {
         false
@@ -668,169 +964,179 @@ fn is_remote_path(s: &str) -> bool {
 }
 
 pub async fn cp(src: &str, dst: &str) {
-    if is_remote_path(src) {
-        // Download: BOX:PATH -> LOCAL
-        let (box_part, remote_path) = src.split_once(':').unwrap();
-        let url = format!("{}/v1/boxes/{box_part}/files/download", base_url());
+    with_server(|| async {
+        if is_remote_path(src) {
+            let (box_part, remote_path) = src.split_once(':').unwrap();
+            let url = format!("{}/v1/boxes/{box_part}/files/download", base_url());
 
-        match client()
-            .post(&url)
-            .json(&json!({"path": remote_path}))
-            .timeout(std::time::Duration::from_secs(120))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                if status >= 400 {
-                    let text = resp.text().await.unwrap_or_default();
-                    check_response(status, &text);
-                    return;
+            match client()
+                .post(&url)
+                .json(&json!({"path": remote_path}))
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if status >= 400 {
+                        let text = resp.text().await.unwrap_or_default();
+                        check_response(status, &text);
+                        return;
+                    }
+                    let bytes = resp.bytes().await.unwrap_or_default();
+                    let dst_path = Path::new(dst);
+                    if let Some(parent) = dst_path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    if let Err(e) = std::fs::write(dst_path, &bytes) {
+                        eprintln!("{} Writing file: {e}", red("Error:"));
+                        process::exit(1);
+                    }
+                    println!("Downloaded to {dst}");
                 }
-                let bytes = resp.bytes().await.unwrap_or_default();
-                let dst_path = Path::new(dst);
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                if let Err(e) = std::fs::write(dst_path, &bytes) {
-                    eprintln!("Error writing file: {e}");
-                    process::exit(1);
-                }
-                println!("Downloaded to {dst}");
+                Err(e) => handle_connection_error(&e),
             }
-            Err(e) => handle_connection_error(&e),
-        }
-    } else if is_remote_path(dst) {
-        // Upload: LOCAL -> BOX:PATH
-        let (box_part, remote_path) = dst.split_once(':').unwrap();
-        let src_path = Path::new(src);
-        if !src_path.exists() {
-            eprintln!("Error: {src} not found");
-            process::exit(1);
-        }
-
-        let file_bytes = match std::fs::read(src_path) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Error reading file: {e}");
+        } else if is_remote_path(dst) {
+            let (box_part, remote_path) = dst.split_once(':').unwrap();
+            let src_path = Path::new(src);
+            if !src_path.exists() {
+                eprintln!("{} File not found: {src}", red("Error:"));
                 process::exit(1);
             }
-        };
 
-        let file_name = src_path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("file")
-            .to_string();
+            let file_bytes = match std::fs::read(src_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("{} Reading file: {e}", red("Error:"));
+                    process::exit(1);
+                }
+            };
 
-        let file_part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
-        let form = reqwest::multipart::Form::new()
-            .part("file", file_part)
-            .text("dest", remote_path.to_string());
+            let file_name = src_path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("file")
+                .to_string();
 
-        let url = format!("{}/v1/boxes/{box_part}/files/upload", base_url());
+            let file_part = reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
+            let form = reqwest::multipart::Form::new()
+                .part("file", file_part)
+                .text("dest", remote_path.to_string());
+
+            let url = format!("{}/v1/boxes/{box_part}/files/upload", base_url());
+            match client()
+                .post(&url)
+                .multipart(form)
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let text = resp.text().await.unwrap_or_default();
+                    check_response(status, &text);
+                    println!("Uploaded to {box_part}:{remote_path}");
+                }
+                Err(e) => handle_connection_error(&e),
+            }
+        } else {
+            eprintln!(
+                "{} One of src/dst must be in BOX:PATH format",
+                red("Error:")
+            );
+            process::exit(1);
+        }
+    })
+    .await;
+}
+
+// ── run ──────────────────────────────────────────────────────────────────
+
+pub async fn run_ephemeral(image: &str, cmd: &[String], timeout: Option<i64>, disk: i64) {
+    with_server(|| async {
+        let image = resolve_image(image);
+        let timeout_ms = timeout.map(|t| t * 1000);
+        let url = format!("{}/v1/run", base_url());
+        let body = json!({
+            "image": image,
+            "cmd": cmd,
+            "timeout_ms": timeout_ms,
+            "disk_size_gb": disk,
+        });
+
         match client()
             .post(&url)
-            .multipart(form)
-            .timeout(std::time::Duration::from_secs(120))
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
         {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 let text = resp.text().await.unwrap_or_default();
-                check_response(status, &text);
-                println!("Uploaded to {box_part}:{remote_path}");
+                let result = check_response(status, &text);
+
+                if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
+                    if !stdout.is_empty() {
+                        print!("{stdout}");
+                        io::stdout().flush().ok();
+                    }
+                }
+                if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str()) {
+                    if !stderr.is_empty() {
+                        eprint!("{stderr}");
+                        io::stderr().flush().ok();
+                    }
+                }
+
+                let exit_code = result
+                    .get("exit_code")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if exit_code != 0 {
+                    process::exit(exit_code as i32);
+                }
             }
             Err(e) => handle_connection_error(&e),
         }
-    } else {
-        eprintln!("Error: One of src/dst must be in BOX:PATH format");
-        process::exit(1);
-    }
-}
-
-// ── run ──────────────────────────────────────────────────────────────────
-
-pub async fn run_ephemeral(image: &str, cmd: &[String], timeout: Option<i64>, disk: i64) {
-    let image = resolve_image(image);
-    let timeout_ms = timeout.map(|t| t * 1000);
-    let url = format!("{}/v1/run", base_url());
-    let body = json!({
-        "image": image,
-        "cmd": cmd,
-        "timeout_ms": timeout_ms,
-        "disk_size_gb": disk,
-    });
-
-    match client()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(300))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            let result = check_response(status, &text);
-
-            if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
-                if !stdout.is_empty() {
-                    print!("{stdout}");
-                    io::stdout().flush().ok();
-                }
-            }
-            if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str()) {
-                if !stderr.is_empty() {
-                    eprint!("{stderr}");
-                    io::stderr().flush().ok();
-                }
-            }
-
-            let exit_code = result
-                .get("exit_code")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            if exit_code != 0 {
-                process::exit(exit_code as i32);
-            }
-        }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 // ── gc ───────────────────────────────────────────────────────────────────
 
 pub async fn gc(older_than: i64) {
-    let url = format!("{}/v1/gc", base_url());
-    let body = json!({"older_than": older_than});
+    with_server(|| async {
+        let url = format!("{}/v1/gc", base_url());
+        let body = json!({"older_than": older_than});
 
-    match client()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            let result = check_response(status, &text);
-            let removed = result.get("removed").and_then(|v| v.as_i64()).unwrap_or(0);
-            println!("Removed {removed} box(es)");
+        match client()
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                let result = check_response(status, &text);
+                let removed = result.get("removed").and_then(|v| v.as_i64()).unwrap_or(0);
+                println!("Removed {removed} box(es)");
+            }
+            Err(e) => handle_connection_error(&e),
         }
-        Err(e) => handle_connection_error(&e),
-    }
+    })
+    .await;
 }
 
 // ── images ───────────────────────────────────────────────────────────────
 
 pub fn images() {
     let header = format!("{:<12} {:<25} {}", "ALIAS", "IMAGE", "DESCRIPTION");
-    println!("{header}");
-    println!("{}", "-".repeat(header.len()));
+    println!("{}", bold(&header));
+    println!("{}", dim(&"-".repeat(header.len())));
     for (alias, (image, description)) in IMAGE_CATALOG.iter() {
-        println!("{:<12} {:<25} {}", alias, image, description);
+        println!("{:<12} {:<25} {}", green(alias), image, description);
     }
 }
