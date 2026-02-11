@@ -1,4 +1,4 @@
-# BoxRun [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/bCmaK4Ce)
+# BoxRun [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/xe4QK8wycu)
 
 Ultra-lightweight sandbox platform for AI agents.
 
