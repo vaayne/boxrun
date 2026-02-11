@@ -20,7 +20,25 @@ jobs:
             os: macos-latest
             binary: boxrun
             archive: boxrun-aarch64-darwin.tar.gz
-          # TODO: Add Linux targets (x86_64-unknown-linux-musl, aarch64-unknown-linux-musl)
+            guest_target: aarch64-unknown-linux-musl
+          # macOS (amd64)
+          - target: x86_64-apple-darwin
+            os: macos-13
+            binary: boxrun
+            archive: boxrun-x86_64-darwin.tar.gz
+            guest_target: x86_64-unknown-linux-musl
+          # Linux (amd64)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: boxrun
+            archive: boxrun-x86_64-linux.tar.gz
+            guest_target: x86_64-unknown-linux-musl
+          # Linux (arm64)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            binary: boxrun
+            archive: boxrun-aarch64-linux.tar.gz
+            guest_target: aarch64-unknown-linux-musl
 
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +48,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-musl
+          targets: |
+            ${{ matrix.target }}
+            ${{ matrix.guest_target }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -45,12 +65,19 @@ jobs:
           brew install llvm lld protobuf
           brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl
 
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        env:
+          SKIP_INSTALL_NODEJS: '1'
+        run: bash ../boxlite/scripts/setup/setup-ubuntu.sh
+
       - name: Build release binary
-        run: cargo build --release --bin boxrun
+        run: cargo build --release --bin boxrun --target ${{ matrix.target }}
 
       - name: Build BoxLite runtime
         run: |
-          LIBS_DIR=$(find target/release/build -path "*/boxlite-*/out/runtime" -type d | head -1)
+          export GUEST_TARGET="${{ matrix.guest_target }}"
+          LIBS_DIR=$(find "$PWD/target/${{ matrix.target }}/release/build" -path "*/boxlite-*/out/runtime" -type d | head -1)
           bash ../boxlite/scripts/build/build-runtime.sh \
             --dest-dir "$PWD/target/boxlite-runtime" \
             --libs-dir "$LIBS_DIR"
@@ -58,8 +85,12 @@ jobs:
       - name: Package archive
         run: |
           mkdir -p staging/boxrun/runtime
-          cp target/release/${{ matrix.binary }} staging/boxrun/
-          install_name_tool -add_rpath @executable_path/runtime staging/boxrun/${{ matrix.binary }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} staging/boxrun/
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            install_name_tool -add_rpath @executable_path/runtime staging/boxrun/${{ matrix.binary }}
+          else
+            patchelf --set-rpath '$ORIGIN/runtime' staging/boxrun/${{ matrix.binary }}
+          fi
           cp target/boxlite-runtime/* staging/boxrun/runtime/
 
           echo "=== Contents ==="
@@ -92,5 +123,8 @@ jobs:
         with:
           files: |
             boxrun-aarch64-darwin.tar.gz
+            boxrun-x86_64-darwin.tar.gz
+            boxrun-x86_64-linux.tar.gz
+            boxrun-aarch64-linux.tar.gz
             checksums.txt
           generate_release_notes: true

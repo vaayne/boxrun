@@ -16,14 +16,14 @@ BoxRun is the management layer for [BoxLite](https://github.com/boxlite-ai/boxli
 
 ## Install
 
-> **Requirements:** macOS Apple Silicon (M1+). Linux support coming soon.
+> **Requirements:** macOS Apple Silicon (M1+) or Linux (amd64/arm64).
 
 ```bash
-# Homebrew
+# Homebrew (macOS only)
 brew tap boxlite-ai/tap
 brew install boxrun
 
-# Or via install script
+# Or via install script (Linux or macOS)
 curl -fsSL https://boxlite.ai/boxrun/install | sh
 ```
 

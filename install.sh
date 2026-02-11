@@ -13,6 +13,7 @@ set -e
 #   VERSION           Version tag to install (default: latest)
 #   BOXRUN_HOME       Installation directory (default: ~/.boxrun)
 #   BOXRUN_BIN_DIR    Where to place the symlink (default: /usr/local/bin)
+#   BOXRUN_ARCH       Override detected arch (amd64|arm64|x86_64|aarch64)
 
 REPO="boxlite-ai/boxrun"
 BOXRUN_HOME="${BOXRUN_HOME:-$HOME/.boxrun}"
@@ -49,7 +50,14 @@ json_field() {
 }
 
 OS=$(detect_os)
-ARCH=$(detect_arch)
+ARCH=${BOXRUN_ARCH:-$(detect_arch)}
+
+case "$ARCH" in
+  amd64) ARCH="x86_64" ;;
+  arm64) ARCH="aarch64" ;;
+  x86_64|aarch64) ;;
+  *) ARCH="unsupported" ;;
+esac
 
 if [ "$OS" = "unsupported" ] || [ "$ARCH" = "unsupported" ]; then
   echo "Error: Unsupported platform $(uname -s)/$(uname -m)"
