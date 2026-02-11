@@ -123,7 +123,7 @@ class BoxRunClient:
         *,
         name: str | None = None,
         cpu: int = 2,
-        memory_mb: int = 512,
+        memory_mb: int = 1024,
         disk_size_gb: int = 8,
         network: bool = False,
         workdir: str = "/root",
@@ -255,7 +255,7 @@ class BoxRunClient:
         resp = await self._http.post(
             f"/v1/boxes/{box_id}/files/upload",
             files={"file": (Path(local_path).name, file_bytes)},
-            data={"path": dest_path},
+            data={"dest": dest_path},
             timeout=60,
         )
         _check_error(resp)

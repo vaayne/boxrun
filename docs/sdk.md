@@ -30,7 +30,7 @@ async with BoxRunClient(base_url="http://localhost:9090") as client:
 
 ## BoxRunClient
 
-### `create(image, *, name=None, cpu=2, memory_mb=512, network=False, workdir="/root", env=None, volumes=None) → BoxHandle`
+### `create(image, *, name=None, cpu=2, memory_mb=1024, network=False, workdir="/root", env=None, volumes=None) → BoxHandle`
 
 Create a new box and return a handle to it.
 
@@ -45,7 +45,7 @@ box = await client.create("ubuntu:24.04", name="dev", memory_mb=1024)
 | `image` | `str` | (required) | Container image |
 | `name` | `str \| None` | `None` | Human-readable name |
 | `cpu` | `int` | `2` | CPU cores |
-| `memory_mb` | `int` | `512` | Memory in MB |
+| `memory_mb` | `int` | `1024` | Memory in MB |
 | `network` | `bool` | `False` | Enable networking |
 | `workdir` | `str` | `"/root"` | Working directory |
 | `env` | `dict[str, str] \| None` | `None` | Environment variables |
