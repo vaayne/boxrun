@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "boxrun-sdk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "boxrun-types",
  "futures",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "boxrun-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "axum 0.8.8",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "boxrun-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "num_cpus",
