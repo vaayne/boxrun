@@ -22,12 +22,6 @@ jobs:
             binary: boxrun
             archive: boxrun-aarch64-darwin.tar.gz
             guest_target: aarch64-unknown-linux-musl
-          # macOS (amd64)
-          - target: x86_64-apple-darwin
-            os: macos-13
-            binary: boxrun
-            archive: boxrun-x86_64-darwin.tar.gz
-            guest_target: x86_64-unknown-linux-musl
           # Linux (amd64)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -54,6 +48,10 @@ jobs:
             ${{ matrix.guest_target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            ../boxlite -> target
 
       - name: Install Go (for libgvproxy)
         uses: actions/setup-go@v5
@@ -124,7 +122,6 @@ jobs:
         with:
           files: |
             boxrun-aarch64-darwin.tar.gz
-            boxrun-x86_64-darwin.tar.gz
             boxrun-x86_64-linux.tar.gz
             boxrun-aarch64-linux.tar.gz
             checksums.txt
