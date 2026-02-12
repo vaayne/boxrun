@@ -1,9 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::pin::Pin;
 
 use boxrun_types::config::resolve_image;
 use boxrun_types::error::{BoxRunError, ErrorCode};
+use eventsource_stream::Eventsource;
+use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
+
+/// A stream of exec events from an SSE connection.
+pub type ExecEventStream = Pin<Box<dyn Stream<Item = Result<ExecEvent, BoxRunError>> + Send>>;
 
 /// Information about a box.
 #[derive(Debug, Clone)]
@@ -490,6 +496,93 @@ impl BoxRunClient {
         let data = Self::check_error(status, &text)?;
         Ok(data["removed"].as_i64().unwrap_or(0))
     }
+
+    // ── SSE streaming ───────────────────────────────────────────────────
+
+    /// Stream exec events via SSE for an already-started execution.
+    pub async fn exec_events_stream(
+        &self,
+        box_id: &str,
+        exec_id: &str,
+    ) -> Result<ExecEventStream, BoxRunError> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/v1/boxes/{}/exec/{}/events",
+                self.base_url, box_id, exec_id
+            ))
+            .send()
+            .await
+            .map_err(|e| BoxRunError::new(ErrorCode::RuntimeError, e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Self::check_error(status, &text).unwrap_err());
+        }
+
+        let stream = resp
+            .bytes_stream()
+            .eventsource()
+            .filter_map(|result| async move {
+                match result {
+                    Ok(event) => parse_sse_event(event),
+                    Err(e) => Some(Err(BoxRunError::new(
+                        ErrorCode::RuntimeError,
+                        format!("SSE stream error: {e}"),
+                    ))),
+                }
+            })
+            .scan(false, |done, item| {
+                if *done {
+                    return std::future::ready(None);
+                }
+                if let Ok(ref event) = item {
+                    if event.event_type == "exit" {
+                        *done = true;
+                    }
+                }
+                std::future::ready(Some(item))
+            });
+
+        Ok(Box::pin(stream))
+    }
+
+    /// Start an execution and stream its events via SSE.
+    pub async fn exec_stream(
+        &self,
+        box_id: &str,
+        cmd: &[String],
+        env: Option<&HashMap<String, String>>,
+        timeout_ms: Option<i64>,
+    ) -> Result<ExecEventStream, BoxRunError> {
+        let exec_info = self.start_exec(box_id, cmd, env, timeout_ms).await?;
+        self.exec_events_stream(box_id, &exec_info.id).await
+    }
+}
+
+/// Parse an SSE event from eventsource-stream into an ExecEvent.
+/// Returns None for keep-alive events (empty data).
+fn parse_sse_event(event: eventsource_stream::Event) -> Option<Result<ExecEvent, BoxRunError>> {
+    let data_str = event.data;
+    if data_str.is_empty() {
+        return None;
+    }
+    let parsed: Value = match serde_json::from_str(&data_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(Err(BoxRunError::new(
+                ErrorCode::RuntimeError,
+                format!("Failed to parse SSE event JSON: {e}"),
+            )));
+        }
+    };
+    Some(Ok(ExecEvent {
+        event_type: event.event,
+        data: parsed["data"].as_str().unwrap_or("").to_string(),
+        stream: parsed["stream"].as_str().map(|s| s.to_string()),
+        seq: parsed["seq"].as_i64().unwrap_or(0),
+    }))
 }
 
 /// Handle to a specific box, obtained from BoxRunClient.
@@ -575,5 +668,81 @@ impl<'a> BoxHandle<'a> {
 
     pub async fn remove(&self, force: bool) -> Result<(), BoxRunError> {
         self.client.remove_box(&self.info.id, force).await
+    }
+
+    /// Stream exec events via SSE for an already-started execution.
+    pub async fn exec_events_stream(&self, exec_id: &str) -> Result<ExecEventStream, BoxRunError> {
+        self.client.exec_events_stream(&self.info.id, exec_id).await
+    }
+
+    /// Start an execution and stream its events via SSE.
+    pub async fn exec_stream(
+        &self,
+        cmd: &[String],
+        env: Option<&HashMap<String, String>>,
+        timeout_ms: Option<i64>,
+    ) -> Result<ExecEventStream, BoxRunError> {
+        self.client
+            .exec_stream(&self.info.id, cmd, env, timeout_ms)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_event(event: &str, data: &str) -> eventsource_stream::Event {
+        eventsource_stream::Event {
+            event: event.to_string(),
+            data: data.to_string(),
+            id: String::new(),
+            retry: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_log_event() {
+        let event = make_event("log", r#"{"stream":"stdout","data":"hello\n","seq":0}"#);
+        let result = parse_sse_event(event).unwrap().unwrap();
+        assert_eq!(result.event_type, "log");
+        assert_eq!(result.stream, Some("stdout".to_string()));
+        assert_eq!(result.data, "hello\n");
+        assert_eq!(result.seq, 0);
+    }
+
+    #[test]
+    fn test_parse_exit_event() {
+        let event = make_event(
+            "exit",
+            r#"{"stream":null,"data":"{\"exit_code\":0}","seq":2}"#,
+        );
+        let result = parse_sse_event(event).unwrap().unwrap();
+        assert_eq!(result.event_type, "exit");
+        assert!(result.stream.is_none());
+        assert_eq!(result.seq, 2);
+    }
+
+    #[test]
+    fn test_parse_stderr_event() {
+        let event = make_event("log", r#"{"stream":"stderr","data":"error msg","seq":1}"#);
+        let result = parse_sse_event(event).unwrap().unwrap();
+        assert_eq!(result.event_type, "log");
+        assert_eq!(result.stream, Some("stderr".to_string()));
+        assert_eq!(result.data, "error msg");
+        assert_eq!(result.seq, 1);
+    }
+
+    #[test]
+    fn test_parse_empty_data_returns_none() {
+        let event = make_event("", "");
+        assert!(parse_sse_event(event).is_none());
+    }
+
+    #[test]
+    fn test_parse_malformed_json_returns_error() {
+        let event = make_event("log", "not valid json{");
+        let result = parse_sse_event(event).unwrap();
+        assert!(result.is_err());
     }
 }

@@ -514,6 +514,65 @@ async fn test_exec_response_fields() {
     }
 }
 
+// ── SSE endpoint tests ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_exec_events_sse_not_found() {
+    let (app, state) = test_app().await;
+    seed_box(&state, "box_1", None, "running").await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/boxes/box_1/exec/nonexistent/events")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["code"], "EXEC_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn test_exec_events_sse_finished_exec() {
+    let (app, state) = test_app().await;
+    seed_box(&state, "box_1", None, "running").await;
+    seed_exec(&state, "exec_1", "box_1", "succeeded", Some(0)).await;
+
+    // Add some events to the store
+    state
+        .manager
+        .store()
+        .append_event("exec_1", 0, "log", "hello\n", Some("stdout"))
+        .await
+        .unwrap();
+    state
+        .manager
+        .store()
+        .append_event("exec_1", 1, "exit", r#"{"exit_code":0}"#, None)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/boxes/box_1/exec/exec_1/events")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+    // Verify the SSE response contains our events
+    assert!(body_str.contains("event: log"));
+    assert!(body_str.contains("event: exit"));
+    assert!(body_str.contains("hello\\n"));
+}
+
 // ── Tier 2: Need BoxLite (conditional) ───────────────────────────────────
 
 fn boxlite_available() -> bool {
