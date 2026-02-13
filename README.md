@@ -1,8 +1,8 @@
 # BoxRun [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](go.boxlite.ai/discord)
 
-Ultra-lightweight sandbox platform for AI agents.
+Manage stateful, lightweight micro-VM sandboxes for AI agents.
 
-BoxRun is the management layer for [BoxLite](https://github.com/boxlite-ai/boxlite) sandboxes — create, list, stop, and delete boxes through CLI, REST API, Python SDK, or web dashboard. All in a single binary, no Docker, no Kubernetes, no external dependencies.
+BoxRun is the management layer for [BoxLite](https://github.com/boxlite-ai/boxlite) — the local-first micro-VM sandbox. Create, list, stop, and delete boxes through CLI, REST API, Python SDK, or web dashboard. All in a single binary, no Docker, no Kubernetes, no external dependencies.
 
 ## Why BoxRun?
 
