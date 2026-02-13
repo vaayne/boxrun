@@ -255,6 +255,6 @@ print(result.stdout)  # "42\n"
 ```
 
 Key points:
-- The server must be running (`boxrun serve`)
+- The server auto-starts on first CLI command (or run `boxrun serve` manually)
 - Boxes persist across client disconnects
 - All errors raise `BoxRunError(code, message)`

@@ -21,7 +21,7 @@ Total CPU and memory limits are **auto-detected from host hardware**. There is n
 | Total CPU | auto-detected (host CPU count) |
 | Total memory | auto-detected (host RAM) |
 | Per-box CPU | 2 cores |
-| Per-box memory | 512 MB |
+| Per-box memory | 1024 MB |
 | Per-box disk | 8 GB |
 | Per-box workdir | `/root` |
 

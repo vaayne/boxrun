@@ -19,7 +19,7 @@ The web dashboard is available at `http://<host>:<port>/ui` when running in TCP 
 ### Create
 
 ```bash
-boxrun create IMAGE [--name NAME] [--cpu 2] [--memory 512] [--network] [-v /host:/guest[:ro]]
+boxrun create IMAGE [--name NAME] [--cpu 2] [--memory 1024] [--network] [-v /host:/guest[:ro]]
 ```
 
 Create a new box from a container image.
@@ -28,7 +28,7 @@ Create a new box from a container image.
 |------|---------|-------------|
 | `--name`, `-n` | (auto) | Human-readable name |
 | `--cpu` | `2` | CPU cores |
-| `--memory`, `-m` | `512` | Memory in MB |
+| `--memory`, `-m` | `1024` | Memory in MB |
 | `--network` | `false` | Enable networking |
 | `-v`, `--volume` | (none) | Volume mount (repeatable) |
 
