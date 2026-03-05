@@ -46,6 +46,11 @@ mkdir -p "${BOXRUN_HOME}/runtime"
 cp "$PROJECT_ROOT/target/release/boxrun" "${BOXRUN_HOME}/boxrun"
 chmod +x "${BOXRUN_HOME}/boxrun"
 
+# Add rpath so the binary can find runtime dylibs (libkrun, libgvproxy, etc.)
+if [ "$(uname)" = "Darwin" ]; then
+  install_name_tool -add_rpath @executable_path/runtime "${BOXRUN_HOME}/boxrun" 2>/dev/null || true
+fi
+
 cp -f "$RUNTIME_DIR"/* "${BOXRUN_HOME}/runtime/" 2>/dev/null || true
 chmod +x "${BOXRUN_HOME}/runtime/boxlite-guest" "${BOXRUN_HOME}/runtime/boxlite-shim" 2>/dev/null || true
 
