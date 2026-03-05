@@ -38,8 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out BoxLite
-        run: git clone --recurse-submodules --depth 1 https://github.com/boxlite-ai/boxlite.git ../boxlite
+      - name: Check out BoxLite (pinned to Cargo.lock revision)
+        run: |
+          BOXLITE_REV=$(grep -A2 'name = "boxlite"' Cargo.lock | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p')
+          git clone --recurse-submodules https://github.com/boxlite-ai/boxlite.git ../boxlite
+          cd ../boxlite && git checkout "$BOXLITE_REV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:

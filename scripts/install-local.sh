@@ -13,13 +13,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOXLITE_ROOT="$PROJECT_ROOT/../boxlite"
 
-# 0) Auto-clone BoxLite if not present
+# 0) Auto-clone BoxLite if not present, pinned to Cargo.lock revision
+BOXLITE_REV=$(grep -A2 'name = "boxlite"' "$PROJECT_ROOT/Cargo.lock" | sed -n 's/.*#\([0-9a-f]*\)".*/\1/p')
 if [ ! -d "$BOXLITE_ROOT" ]; then
   echo "==> BoxLite not found at $BOXLITE_ROOT, cloning..."
-  git clone --recurse-submodules --depth 1 \
+  git clone --recurse-submodules \
     https://github.com/boxlite-ai/boxlite.git "$BOXLITE_ROOT"
 fi
 BOXLITE_ROOT="$(cd "$BOXLITE_ROOT" && pwd)"
+if [ -n "$BOXLITE_REV" ]; then
+  echo "==> Pinning BoxLite to Cargo.lock revision: $BOXLITE_REV"
+  cd "$BOXLITE_ROOT" && git checkout "$BOXLITE_REV"
+  cd "$PROJECT_ROOT"
+fi
 
 # 1) Build boxrun binary
 echo "==> Building boxrun (release)..."
